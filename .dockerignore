@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+
+# Local files
+main.py
+client.py
+.DS_Store

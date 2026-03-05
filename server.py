@@ -1,0 +1,877 @@
+#!/usr/bin/env python3
+"""
+WebSocket server for multiplayer Kaiser card game.
+Manages game rooms and player connections.
+"""
+import asyncio
+import json
+import os
+from dataclasses import asdict
+from typing import Dict, List, Optional
+import websockets
+from websockets.server import WebSocketServerProtocol
+from bot_sim import BotPolicy, BotProfile, PRESET_PROFILES
+from kaiser import KaiserGame
+
+
+BOT_PERSONAS: List[dict] = [
+    {
+        "name": "Anne",
+        "profile": "balanced",
+        "bio": "Balanced style. Anne reads the table and avoids wild swings. Off-table she is the organized one who always brings score sheets and snacks.",
+    },
+    {
+        "name": "Vivian",
+        "profile": "cautious",
+        "bio": "Cautious style. Vivian values safe contracts and disciplined card management. She is thoughtful, observant, and quietly competitive.",
+    },
+    {
+        "name": "Nelson",
+        "profile": "chaotic",
+        "bio": "Chaotic style. Nelson brings unpredictable lines and momentum plays. Around the table he keeps things lively with playful banter.",
+    },
+    {
+        "name": "Edward",
+        "profile": "aggressive",
+        "bio": "Aggressive style. Edward pushes bids and pressures opponents early. Socially he is bold, confident, and loves high-stakes moments.",
+    },
+]
+
+
+class GameRoom:
+    """Manages a single game instance with 4 players."""
+    
+    def __init__(self, room_id: str):
+        self.room_id = room_id
+        self.game = KaiserGame.new_default()
+        self.players: Dict[int, WebSocketServerProtocol] = {}  # player_index -> websocket
+        self.player_names: Dict[int, str] = {}  # player_index -> name
+        self.bot_policies: Dict[int, BotPolicy] = {}  # player_index -> policy
+        self.bot_personas: Dict[int, dict] = {}  # player_index -> persona metadata
+        self.host_player_index: Optional[int] = None
+        self.setup_complete: bool = False
+        self.ready = False
+
+    def _recompute_ready(self) -> None:
+        self.ready = (len(self.players) + len(self.bot_policies)) == 4
+
+    def is_bot_seat(self, player_index: int) -> bool:
+        return player_index in self.bot_policies
+
+    def available_bot_personas(self) -> List[dict]:
+        used_names = {self.game.players[idx].name for idx in self.bot_personas}
+        return [persona for persona in BOT_PERSONAS if persona["name"] not in used_names]
+
+    def setup_options_payload(self) -> dict:
+        human_options = [
+            {
+                "id": f"human:{seat}",
+                "name": self.player_names[seat],
+                "seat": seat,
+            }
+            for seat in sorted(self.players.keys())
+        ]
+        bot_options = [
+            {
+                "id": f"bot:{persona['name']}",
+                "name": persona["name"],
+                "profile": persona["profile"],
+                "bio": persona["bio"],
+            }
+            for persona in BOT_PERSONAS
+        ]
+
+        current_assignments: List[Optional[str]] = []
+        for seat in range(4):
+            if seat in self.players:
+                current_assignments.append(f"human:{seat}")
+            elif seat in self.bot_personas:
+                current_assignments.append(f"bot:{self.bot_personas[seat]['name']}")
+            else:
+                current_assignments.append(None)
+
+        return {
+            "setup": {
+                "human_options": human_options,
+                "bot_options": bot_options,
+                "current_assignments": current_assignments,
+            }
+        }
+
+    def apply_setup_assignments(self, seat_assignments: List[str]) -> List[dict]:
+        if len(seat_assignments) != 4:
+            raise ValueError("Setup requires exactly 4 seat assignments")
+        if len(set(seat_assignments)) != 4:
+            raise ValueError("Seat assignments must be unique")
+
+        old_players = dict(self.players)
+        old_names = dict(self.player_names)
+        host_ws = old_players.get(self.host_player_index) if self.host_player_index is not None else None
+
+        valid_human_ids = {f"human:{seat}" for seat in old_players.keys()}
+        selected_humans = [item for item in seat_assignments if item.startswith("human:")]
+        if set(selected_humans) != valid_human_ids:
+            raise ValueError("All connected human players must be assigned exactly once")
+
+        bot_lookup = {f"bot:{persona['name']}": persona for persona in BOT_PERSONAS}
+
+        new_players: Dict[int, WebSocketServerProtocol] = {}
+        new_player_names: Dict[int, str] = {}
+        new_bot_policies: Dict[int, BotPolicy] = {}
+        new_bot_personas: Dict[int, dict] = {}
+
+        for seat, assignment in enumerate(seat_assignments):
+            if assignment in valid_human_ids:
+                old_seat = int(assignment.split(":", 1)[1])
+                ws = old_players.get(old_seat)
+                if ws is None:
+                    raise ValueError("Invalid human seat assignment")
+                name = old_names[old_seat]
+                new_players[seat] = ws
+                new_player_names[seat] = name
+                self.game.players[seat].name = name
+                continue
+
+            persona = bot_lookup.get(assignment)
+            if persona is None:
+                raise ValueError(f"Invalid setup assignment '{assignment}'")
+
+            preset = PRESET_PROFILES[persona["profile"]]
+            profile = BotProfile(**asdict(preset))
+            new_bot_policies[seat] = BotPolicy(profile=profile)
+            new_bot_personas[seat] = persona
+            self.game.players[seat].name = persona["name"]
+
+        self.players = new_players
+        self.player_names = new_player_names
+        self.bot_policies = new_bot_policies
+        self.bot_personas = new_bot_personas
+        self.setup_complete = True
+
+        if host_ws is not None:
+            for seat, ws in self.players.items():
+                if ws == host_ws:
+                    self.host_player_index = seat
+                    break
+        if self.host_player_index is None and self.players:
+            self.host_player_index = min(self.players.keys())
+
+        self._recompute_ready()
+        return [
+            {
+                "seat": seat,
+                "type": "bot",
+                "name": persona["name"],
+                "profile": persona["profile"],
+            }
+            for seat, persona in sorted(self.bot_personas.items())
+        ]
+
+    def add_bots_to_fill(self) -> List[dict]:
+        default_assignments: List[str] = []
+        available_bots = [f"bot:{persona['name']}" for persona in BOT_PERSONAS]
+        cursor = 0
+        for seat in range(4):
+            if seat in self.players:
+                default_assignments.append(f"human:{seat}")
+            else:
+                default_assignments.append(available_bots[cursor])
+                cursor += 1
+        return self.apply_setup_assignments(default_assignments)
+
+    def restart_game(self) -> None:
+        self.game = KaiserGame.new_default()
+        for seat in range(4):
+            if seat in self.players:
+                name = self.player_names.get(seat, f"Player {seat + 1}")
+                self.game.players[seat].name = name
+            elif seat in self.bot_personas:
+                self.game.players[seat].name = self.bot_personas[seat]["name"]
+        self._recompute_ready()
+
+    def room_payload(self) -> dict:
+        roster = []
+        for seat in range(4):
+            if seat in self.players:
+                roster.append(
+                    {
+                        "seat": seat,
+                        "type": "human",
+                        "name": self.game.players[seat].name,
+                    }
+                )
+            elif seat in self.bot_personas:
+                persona = self.bot_personas[seat]
+                roster.append(
+                    {
+                        "seat": seat,
+                        "type": "bot",
+                        "name": persona["name"],
+                        "profile": persona["profile"],
+                        "bio": persona["bio"],
+                    }
+                )
+            else:
+                roster.append({"seat": seat, "type": "empty", "name": None})
+
+        return {
+            "room": {
+                "humans": len(self.players),
+                "bots": len(self.bot_policies),
+                "ready": self.ready,
+                "setup_complete": self.setup_complete,
+                "host_player_index": self.host_player_index,
+                "roster": roster,
+                "available_virtual_players": BOT_PERSONAS,
+                **self.setup_options_payload(),
+            }
+        }
+    
+    def add_player(self, ws: WebSocketServerProtocol, name: str) -> Optional[int]:
+        """Add a player to the room. Returns player index or None if room full."""
+        for i in range(4):
+            if i not in self.players and i not in self.bot_policies:
+                self.players[i] = ws
+                self.player_names[i] = name
+                self.game.players[i].name = name
+                if self.host_player_index is None:
+                    self.host_player_index = i
+                self._recompute_ready()
+                return i
+        return None
+    
+    def remove_player(self, ws: WebSocketServerProtocol) -> Optional[int]:
+        """Remove a player from the room. Returns their index or None."""
+        for idx, player_ws in self.players.items():
+            if player_ws == ws:
+                del self.players[idx]
+                del self.player_names[idx]
+                if self.host_player_index == idx:
+                    self.host_player_index = min(self.players.keys()) if self.players else None
+                self._recompute_ready()
+                return idx
+        return None
+    
+    def get_player_index(self, ws: WebSocketServerProtocol) -> Optional[int]:
+        """Get the player index for a websocket."""
+        for idx, player_ws in self.players.items():
+            if player_ws == ws:
+                return idx
+        return None
+    
+    async def broadcast(self, message: dict, exclude: Optional[WebSocketServerProtocol] = None):
+        """Send a message to all players in the room."""
+        disconnected = []
+        for idx, ws in self.players.items():
+            if ws != exclude:
+                try:
+                    await ws.send(json.dumps(message))
+                except:
+                    disconnected.append(idx)
+        
+        # Clean up disconnected players
+        for idx in disconnected:
+            if idx in self.players:
+                del self.players[idx]
+            if idx in self.player_names:
+                del self.player_names[idx]
+            if self.host_player_index == idx:
+                self.host_player_index = min(self.players.keys()) if self.players else None
+            self._recompute_ready()
+    
+    async def send_to_player(self, player_index: int, message: dict):
+        """Send a message to a specific player."""
+        if player_index in self.players:
+            try:
+                await self.players[player_index].send(json.dumps(message))
+            except:
+                pass
+
+
+class GameServer:
+    """Manages multiple game rooms."""
+    
+    def __init__(self):
+        self.rooms: Dict[str, GameRoom] = {}
+        self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index)
+        self.bot_turn_delay_seconds = float(os.environ.get("BOT_TURN_DELAY_SECONDS", "1.2"))
+    
+    def create_room(self, room_id: str) -> GameRoom:
+        """Create a new game room."""
+        if room_id not in self.rooms:
+            self.rooms[room_id] = GameRoom(room_id)
+        return self.rooms[room_id]
+    
+    def get_room(self, room_id: str) -> Optional[GameRoom]:
+        """Get an existing room."""
+        return self.rooms.get(room_id)
+
+    def _turn_payload(self, game: KaiserGame) -> dict:
+        if game.phase == "bidding":
+            index = game.bid_turn_index
+            return {
+                "current_player_index": index,
+                "current_player_name": game.players[index].name,
+                "turn_context": "bidding",
+            }
+        if game.phase == "playing":
+            index = game.play_turn_index
+            return {
+                "current_player_index": index,
+                "current_player_name": game.players[index].name,
+                "turn_context": "playing",
+            }
+        index = game.dealer_index
+        return {
+            "current_player_index": index,
+            "current_player_name": game.players[index].name,
+            "turn_context": "idle",
+        }
+
+    def _scoreboard_payload(self, game: KaiserGame) -> dict:
+        team0_label = f"{game.players[0].name}/{game.players[2].name}"
+        team1_label = f"{game.players[1].name}/{game.players[3].name}"
+
+        bid = None
+        bid_source = game.highest_bid if game.highest_bid is not None else game.contract
+        if bid_source is not None:
+            declarer = game.players[bid_source.player_index].name
+            team_index = bid_source.player_index % 2
+            bid = {
+                "value": bid_source.value,
+                "trump": bid_source.trump,
+                "declarer": declarer,
+                "team_index": team_index,
+                "team_label": team0_label if team_index == 0 else team1_label,
+            }
+        return {
+            "scoreboard": {
+                "phase": game.phase,
+                "dealer_index": game.dealer_index,
+                "dealer_name": game.players[game.dealer_index].name,
+                "winning": {
+                    "target": 64 if game.no_trump_bid_seen else 52,
+                    "no_trump_bid_seen": game.no_trump_bid_seen,
+                    "winner_team_index": game.winning_team_index,
+                    "winner_team_label": (
+                        team0_label if game.winning_team_index == 0 else team1_label if game.winning_team_index == 1 else None
+                    ),
+                },
+                "team_labels": {
+                    "team0": team0_label,
+                    "team1": team1_label,
+                },
+                "game_score": {
+                    "team0": game.game_score[0],
+                    "team1": game.game_score[1],
+                },
+                "hand": {
+                    "tricks": {
+                        "team0": game.team_tricks[0],
+                        "team1": game.team_tricks[1],
+                    },
+                    "points": {
+                        "team0": game.team_points[0],
+                        "team1": game.team_points[1],
+                    },
+                    "trick_number": game.trick_number,
+                },
+                "bid": bid,
+            }
+        }
+
+    async def _send_hands_to_humans(self, room: GameRoom) -> None:
+        game = room.game
+        for idx in room.players:
+            await room.send_to_player(
+                idx,
+                {
+                    "type": "hand",
+                    "cards": game.players[idx].show_hand(),
+                },
+            )
+
+    async def _run_bot_turns(self, room: GameRoom) -> None:
+        game = room.game
+
+        while room.ready:
+            if game.phase == "bidding":
+                seat = game.bid_turn_index
+            elif game.phase == "playing":
+                seat = game.play_turn_index
+            else:
+                break
+
+            if not room.is_bot_seat(seat):
+                break
+
+            bot_policy = room.bot_policies[seat]
+            bot_name = game.players[seat].name
+            try:
+                if game.phase == "bidding":
+                    action, payload, reason = bot_policy.choose_bid_action(game, seat)
+                    if action == "bid":
+                        result = game.place_bid(value=int(payload["value"]), trump=str(payload["trump"]))
+                    elif action == "take":
+                        result = game.dealer_take_bid(trump=str(payload["trump"]))
+                    elif action == "pass":
+                        result = game.pass_bid()
+                    else:
+                        result = game.pass_bid()
+
+                    await room.broadcast(
+                        {
+                            "type": "game_update",
+                            "message": result,
+                            "phase": game.phase,
+                            "bidding": game.bidding_summary(),
+                            "bot_action": {
+                                "bot_name": bot_name,
+                                "action": action,
+                                "reason": reason,
+                            },
+                            **self._turn_payload(game),
+                            **self._scoreboard_payload(game),
+                            **room.room_payload(),
+                        }
+                    )
+
+                    if game.phase == "playing":
+                        await room.broadcast(
+                            {
+                                "type": "phase_change",
+                                "phase": "playing",
+                                "message": "Bidding complete. Play phase started.",
+                                "trick": game.trick_summary(),
+                                **self._turn_payload(game),
+                                **self._scoreboard_payload(game),
+                                **room.room_payload(),
+                            }
+                        )
+                    if self.bot_turn_delay_seconds > 0:
+                        await asyncio.sleep(self.bot_turn_delay_seconds)
+                else:
+                    action, payload, reason = bot_policy.choose_play_card(game, seat)
+                    result = game.play_card(str(payload["card"]))
+                    await room.broadcast(
+                        {
+                            "type": "game_update",
+                            "message": result,
+                            "phase": game.phase,
+                            "trick": game.trick_summary(),
+                            "bot_action": {
+                                "bot_name": bot_name,
+                                "action": action,
+                                "reason": reason,
+                            },
+                            **self._turn_payload(game),
+                            **self._scoreboard_payload(game),
+                            **room.room_payload(),
+                        }
+                    )
+                    await self._send_hands_to_humans(room)
+
+                    if game.phase == "hand_over":
+                        await room.broadcast(
+                            {
+                                "type": "hand_complete",
+                                "message": "Hand complete.",
+                                "trick": game.trick_summary(),
+                                "state": game.state_summary(),
+                                **self._scoreboard_payload(game),
+                                **room.room_payload(),
+                            }
+                        )
+                        break
+                    if self.bot_turn_delay_seconds > 0:
+                        await asyncio.sleep(self.bot_turn_delay_seconds)
+            except Exception as exc:
+                await room.broadcast(
+                    {
+                        "type": "game_update",
+                        "message": f"Bot action failed for {bot_name}: {exc}",
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game),
+                        **room.room_payload(),
+                    }
+                )
+                break
+    
+    async def handle_connection(self, websocket: WebSocketServerProtocol):
+        """Handle a new WebSocket connection."""
+        room_id = None
+        player_index = None
+        
+        try:
+            # Wait for initial join message
+            message = await websocket.recv()
+            data = json.loads(message)
+            
+            if data.get("action") != "join":
+                await websocket.send(json.dumps({"error": "First message must be 'join'"}))
+                return
+            
+            room_id = data.get("room_id", "mygame")
+            player_name = data.get("name", f"Player{len(self.connections) + 1}")
+            
+            # Get or create room
+            room = self.get_room(room_id)
+            if not room:
+                room = self.create_room(room_id)
+            
+            # Add player to room
+            player_index = room.add_player(websocket, player_name)
+            if player_index is None:
+                await websocket.send(json.dumps({"error": "Room is full"}))
+                return
+            
+            self.connections[websocket] = (room_id, player_index)
+            
+            # Send join confirmation
+            await websocket.send(json.dumps({
+                "type": "joined",
+                "room_id": room_id,
+                "player_index": player_index,
+                "player_name": player_name,
+                "players_count": len(room.players),
+                "is_host": player_index == room.host_player_index,
+                "setup_required": (player_index == room.host_player_index and not room.setup_complete),
+                **self._turn_payload(room.game),
+                **self._scoreboard_payload(room.game),
+                **room.room_payload(),
+            }))
+            
+            # Notify other players
+            await room.broadcast({
+                "type": "player_joined",
+                "player_name": player_name,
+                "player_index": player_index,
+                "players_count": len(room.players),
+                "ready": room.ready,
+                **self._turn_payload(room.game),
+                **self._scoreboard_payload(room.game),
+                **room.room_payload(),
+            }, exclude=websocket)
+            
+            # Handle game commands
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    await self.handle_command(room, websocket, data)
+                except json.JSONDecodeError:
+                    await websocket.send(json.dumps({"error": "Invalid JSON"}))
+                except Exception as e:
+                    await websocket.send(json.dumps({"error": str(e)}))
+        
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            # Clean up on disconnect
+            if websocket in self.connections:
+                room_id, player_index = self.connections[websocket]
+                del self.connections[websocket]
+                
+                room = self.get_room(room_id)
+                if room:
+                    current_index = room.get_player_index(websocket)
+                    player_name = room.player_names.get(current_index, "Unknown") if current_index is not None else "Unknown"
+                    room.remove_player(websocket)
+                    
+                    # Notify remaining players
+                    await room.broadcast({
+                        "type": "player_left",
+                        "player_name": player_name,
+                        "player_index": player_index,
+                        "players_count": len(room.players),
+                        "ready": room.ready,
+                        **self._turn_payload(room.game),
+                        **self._scoreboard_payload(room.game),
+                        **room.room_payload(),
+                    })
+    
+    async def handle_command(self, room: GameRoom, websocket: WebSocketServerProtocol, data: dict):
+        """Handle a game command from a player."""
+        action = data.get("action")
+        game = room.game
+        run_bots_after = False
+        player_index = room.get_player_index(websocket)
+        if player_index is None:
+            raise ValueError("Player is not seated in this room")
+
+        def require_active_bidder() -> None:
+            if game.phase != "bidding":
+                raise ValueError("Bidding is not active")
+            active_index = game.bid_turn_index
+            if player_index != active_index:
+                active_name = game.players[active_index].name
+                raise ValueError(f"Not your turn to bid. Active bidder: {active_name}")
+
+        def require_active_player() -> None:
+            if game.phase != "playing":
+                raise ValueError("Play phase is not active")
+            active_index = game.play_turn_index
+            if player_index != active_index:
+                active_name = game.players[active_index].name
+                raise ValueError(f"Not your turn to play. Active player: {active_name}")
+        
+        try:
+            if action == "setup_game":
+                if player_index != room.host_player_index:
+                    raise ValueError("Only the first connected player can run game setup")
+                if room.setup_complete:
+                    raise ValueError("Game setup is already complete")
+
+                seat_assignments = data.get("seat_assignments")
+                if isinstance(seat_assignments, list) and seat_assignments:
+                    added = room.apply_setup_assignments([str(item) for item in seat_assignments])
+                else:
+                    added = room.add_bots_to_fill()
+                added_names = ", ".join(bot["name"] for bot in added) if added else "none"
+                await room.broadcast({
+                    "type": "setup_complete",
+                    "message": f"Game setup complete. Virtual players added: {added_names}.",
+                    "added_bots": added,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+
+                for seat in sorted(room.players.keys()):
+                    await room.send_to_player(
+                        seat,
+                        {
+                            "type": "seat_assigned",
+                            "player_index": seat,
+                            "is_host": seat == room.host_player_index,
+                            "setup_required": (seat == room.host_player_index and not room.setup_complete),
+                            **self._turn_payload(game),
+                            **self._scoreboard_payload(game),
+                            **room.room_payload(),
+                        },
+                    )
+
+            elif action == "state":
+                await websocket.send(json.dumps({
+                    "type": "state",
+                    "content": game.state_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                }))
+            
+            elif action == "deal":
+                if not room.ready:
+                    raise ValueError("Need 4 players to start")
+                if player_index != game.dealer_index:
+                    dealer_name = game.players[game.dealer_index].name
+                    raise ValueError(f"Only the dealer can deal. Current dealer: {dealer_name}")
+                game.deal_new_hand()
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": "Dealt 8 cards to each player.",
+                    "state": game.state_summary(),
+                    "phase": game.phase,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                # Send each player their hand privately
+                await self._send_hands_to_humans(room)
+                run_bots_after = True
+
+            elif action == "next_hand":
+                if not room.ready:
+                    raise ValueError("Need 4 players to start")
+                if game.phase != "hand_over":
+                    raise ValueError("Next hand can only be started after a hand is complete")
+
+                new_dealer = game.rotate_dealer()
+                game.deal_new_hand()
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": f"Starting next hand. Dealer rotated to {new_dealer.name}. Dealt 8 cards to each player.",
+                    "state": game.state_summary(),
+                    "phase": game.phase,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                await self._send_hands_to_humans(room)
+                run_bots_after = True
+
+            elif action == "restart_game":
+                if player_index != room.host_player_index:
+                    raise ValueError("Only the host can restart the game")
+                room.restart_game()
+                game = room.game
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": "Game restarted. Scores reset. Dealer may deal when ready.",
+                    "state": game.state_summary(),
+                    "phase": game.phase,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+            
+            elif action == "hands":
+                hand = game.players[player_index].show_hand()
+                await websocket.send(json.dumps({
+                    "type": "hand",
+                    "cards": hand
+                }))
+            
+            elif action == "bidding":
+                await websocket.send(json.dumps({
+                    "type": "bidding",
+                    "content": game.bidding_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                }))
+            
+            elif action == "bid":
+                require_active_bidder()
+                value = data.get("value")
+                trump = data.get("trump")
+                result = game.place_bid(value=value, trump=trump)
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": result,
+                    "phase": game.phase,
+                    "bidding": game.bidding_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                if game.phase == "playing":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "playing",
+                        "message": "Bidding complete. Play phase started.",
+                        "trick": game.trick_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game),
+                        **room.room_payload(),
+                    })
+                run_bots_after = True
+            
+            elif action == "pass":
+                require_active_bidder()
+                result = game.pass_bid()
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": result,
+                    "phase": game.phase,
+                    "bidding": game.bidding_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                if game.phase == "playing":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "playing",
+                        "message": "Bidding complete. Play phase started.",
+                        "trick": game.trick_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game),
+                        **room.room_payload(),
+                    })
+                run_bots_after = True
+            
+            elif action == "take":
+                require_active_bidder()
+                if player_index != game.dealer_index:
+                    raise ValueError("Only the dealer can take the highest bid")
+                trump = data.get("trump")
+                result = game.dealer_take_bid(trump=trump)
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": result,
+                    "phase": game.phase,
+                    "bidding": game.bidding_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                if game.phase == "playing":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "playing",
+                        "message": "Bidding complete. Play phase started.",
+                        "trick": game.trick_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game),
+                        **room.room_payload(),
+                    })
+                run_bots_after = True
+            
+            elif action == "trick":
+                await websocket.send(json.dumps({
+                    "type": "trick",
+                    "content": game.trick_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                }))
+            
+            elif action == "play":
+                require_active_player()
+                card_token = data.get("card")
+                result = game.play_card(card_token)
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": result,
+                    "phase": game.phase,
+                    "trick": game.trick_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+                # Update all players' hands
+                await self._send_hands_to_humans(room)
+                if game.phase == "hand_over":
+                    await room.broadcast({
+                        "type": "hand_complete",
+                        "message": "Hand complete.",
+                        "trick": game.trick_summary(),
+                        "state": game.state_summary(),
+                        **self._scoreboard_payload(game),
+                        **room.room_payload(),
+                    })
+                run_bots_after = True
+            
+            elif action == "rotate":
+                new_dealer = game.rotate_dealer()
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": f"Dealer rotated to {new_dealer.name}.",
+                    "state": game.state_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game),
+                    **room.room_payload(),
+                })
+            
+            else:
+                await websocket.send(json.dumps({"error": f"Unknown action: {action}"}))
+
+            if run_bots_after:
+                await self._run_bot_turns(room)
+        
+        except ValueError as e:
+            await websocket.send(json.dumps({"error": str(e)}))
+
+
+async def main():
+    """Start the WebSocket server."""
+    port = int(os.environ.get("PORT", 8080))
+    server = GameServer()
+    
+    print(f"Starting Kaiser WebSocket server on port {port}")
+    async with websockets.serve(server.handle_connection, "0.0.0.0", port):
+        await asyncio.Future()  # run forever
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

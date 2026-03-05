@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Kaiser 8-card hand icon">
+  <rect width="128" height="128" rx="26" fill="#f6f9f2"/>
+  <rect x="8" y="30" width="20" height="40" rx="4" transform="rotate(-24 8 30)" fill="#1f3d2f" opacity="0.2"/>
+  <rect x="18" y="27" width="20" height="42" rx="4" transform="rotate(-18 18 27)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="30" y="22" width="20" height="43" rx="4" transform="rotate(-12 30 22)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="43" y="19" width="20" height="44" rx="4" transform="rotate(-7 43 19)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="57" y="17" width="20" height="45" rx="4" transform="rotate(-3 57 17)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="71" y="17" width="20" height="45" rx="4" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="85" y="18" width="20" height="45" rx="4" transform="rotate(3 85 18)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <rect x="98" y="21" width="20" height="44" rx="4" transform="rotate(8 98 21)" fill="#ffffff" stroke="#1f3d2f" stroke-width="2"/>
+  <text x="64" y="101" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#1f3d2f">8</text>
+</svg>

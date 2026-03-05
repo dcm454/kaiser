@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-0: #f6f9f2;
+  --bg-1: #eef7ea;
+  --bg-2: #fdf5e8;
+  --text-0: #1f3d2f;
+  --text-1: #4a6a58;
+  --ring: #6dbc8d;
+  --panel: rgb(255 255 255 / 84%);
+  --panel-border: rgb(169 207 180 / 45%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text-0);
+  font-family: var(--font-body), "Avenir Next", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(1200px 700px at 8% -15%, rgb(139 207 169 / 22%), transparent 55%),
+    radial-gradient(1000px 500px at 95% 0%, rgb(255 214 162 / 28%), transparent 60%),
+    linear-gradient(170deg, var(--bg-2) 0%, var(--bg-1) 40%, var(--bg-0) 100%);
+  background-attachment: fixed;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display), "Iowan Old Style", "Georgia", serif;
+}
+
+::selection {
+  color: #183325;
+  background: #bde6ca;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border p-4 shadow-xl backdrop-blur-xl sm:p-5;
+    background: var(--panel);
+    border-color: var(--panel-border);
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200/70;
+  }
+
+  .btn-primary {
+    @apply rounded-xl border border-emerald-700 bg-emerald-700 px-4 py-2 text-sm font-semibold text-emerald-50 transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-900 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .chip {
+    @apply inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.18em];
+  }
+
+  .mono-block {
+    @apply rounded-xl border border-emerald-100 bg-white p-3 text-sm leading-relaxed text-emerald-950;
+    font-family: var(--font-mono), "IBM Plex Mono", "Menlo", monospace;
+  }
+
+  .info-card {
+    @apply rounded-xl border border-emerald-100 bg-white/90 p-3;
+  }
+}
+
+@keyframes enter-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer utilities {
+  .animate-enter {
+    animation: enter-rise 560ms ease-out both;
+  }
+
+  .text-soft {
+    color: var(--text-1);
+  }
+}
+
+pre {
+  margin: 0;
+}

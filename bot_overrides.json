@@ -1,0 +1,26 @@
+[
+  {
+    "bid_aggression": 0.74,
+    "bid_risk_buffer": 3,
+    "no_trump_bias": 0.80,
+    "dealer_take_threshold": 78
+  },
+  {
+    "bid_aggression": 0.77,
+    "bid_risk_buffer": 3,
+    "no_trump_bias": 0.78,
+    "dealer_take_threshold": 74
+  },
+  {
+    "bid_aggression": 0.72,
+    "bid_risk_buffer": 2,
+    "no_trump_bias": 0.85,
+    "dealer_take_threshold": 80
+  },
+  {
+    "bid_aggression": 0.8,
+    "bid_risk_buffer": 2,
+    "no_trump_bias": 0.78,
+    "dealer_take_threshold": 76
+  }
+]
