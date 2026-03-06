@@ -431,7 +431,7 @@ export default function Page() {
                 onClick={() => setHelpOpen(true)}
                 aria-label="Open game help"
               >
-                Rules and Guide
+                Playing Guide
               </button>
               <span className={connected ? "chip border-emerald-300 bg-emerald-100 text-emerald-900" : "chip border-amber-300 bg-amber-100 text-amber-900"}>
                 {connected ? "Connected" : "Disconnected"}
@@ -658,7 +658,7 @@ export default function Page() {
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 id="help-modal-title" className="text-xl font-semibold">Kaiser Rules and GUI Guide</h2>
+                <h2 id="help-modal-title" className="text-xl font-semibold">Kaiser Paying Guide</h2>
                 <p className="mt-1 text-sm text-emerald-800">Quick reference for gameplay and how to use this interface.</p>
               </div>
               <button className="btn-secondary" onClick={() => setHelpOpen(false)}>Close</button>
@@ -670,17 +670,20 @@ export default function Page() {
                 <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
                   <li>Kaiser is a 4-player partnership trick-taking game (Seat 1 and 3 vs Seat 2 and 4).</li>
                   <li>Each hand has bidding, then trick play.</li>
-                  <li>In bidding, players can bid, pass, or take with a trump suit/no-trump.</li>
+                  <li>In bidding, players can bid, pass, and the dealer can take with a trump suit/no-trump.</li>
                   <li>The highest bidder becomes declarer and sets the contract.</li>
                   <li>In play, follow suit when possible. Highest card of lead suit wins unless trump is played.</li>
+                  <li>There are two special cards: 5 of hearts and 3 of spades. The 5H earns additional 5 points. 3S deducts 3 points.</li>
                   <li>Hand and game scoring is shown live in the scoreboard panel.</li>
                 </ul>
               </article>
 
               <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <h3 className="font-semibold">GUI Guide</h3>
+                <h3 className="font-semibold">Guide</h3>
                 <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
-                  <li>Top panel: enter game name and your name, then Connect.</li>
+                  <li>Top panel: enter a game name of your choice and your name, then Connect.</li>
+                  <li>Share the name with any other people that want to play</li>
+                  <li>The first person to connect becomes the host and assigns seats/teams.</li>
                   <li>Rules and Guide button: opens this help popup anytime.</li>
                   <li>Turn and Phase cards: show who acts now and current game stage.</li>
                   <li>Round Snapshot: tracks this hand, this trick, and active bid.</li>
@@ -688,6 +691,17 @@ export default function Page() {
                   <li>Your Hand: click a card to play when it is your turn.</li>
                   <li>Game Log: newest event is at the top.</li>
                 </ul>
+              </article>
+
+              <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+                <h3 className="font-semibold">History and AI</h3>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
+                  <li>The AI players use predefined strategies to make decisions during the game.</li>
+                  <li>They are based on different profiles such as cautious, balanced, aggressive, and chaotic.</li>
+                  <li>They are inspired by 4 siblings (now deceased) who were avid Kaiser players.</li>
+                  <li>They grew up on a farm not far from Smutz Saskatchewan, Canada.</li>
+                  <li>They played Kaiser together over many years, developing unique strategies.</li>
+                 </ul>
               </article>
             </div>
           </section>
