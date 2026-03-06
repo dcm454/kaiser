@@ -155,6 +155,14 @@ class BotPolicy:
 
         is_dealer_turn = player_index == game.dealer_index == game.bid_turn_index
         if is_dealer_turn and best_strength >= self.profile.dealer_take_threshold:
+            # Taking partner's bid should be rare and only done with very high confidence.
+            if highest is not None and highest.player_index != player_index and (highest.player_index % 2) == (player_index % 2):
+                high_confidence_threshold = self.profile.dealer_take_threshold + 12.0
+                clearly_stronger_than_current = projected_bid >= (highest_value + 1)
+                if best_strength >= high_confidence_threshold and clearly_stronger_than_current:
+                    return "take", {"trump": best_trump}, f"{reason}, partner_take_high_confidence"
+                return "pass", {}, f"{reason}, avoid_partner_take"
+
             return "take", {"trump": best_trump}, reason
 
         return "pass", {}, reason

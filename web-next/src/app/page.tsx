@@ -73,7 +73,7 @@ export default function Page() {
   const [scoreSummary, setScoreSummary] = useState("-");
   const [sessionWinsSummary, setSessionWinsSummary] = useState("-");
   const [winningStatus, setWinningStatus] = useState("Target 52 (no no-trump bids yet)");
-  const [thisHand, setThisHand] = useState("Team 1: 0 tricks (0 points)\nTeam 2: 0 tricks (0 points)");
+  const [thisHand, setThisHand] = useState("Team 1:0 tr (0 pts)\nTeam 2:0 tr (0 pts)");
   const [trickNumber, setTrickNumber] = useState(1);
   const [trickPlayHistory, setTrickPlayHistory] = useState<string[]>([]);
   const [trickCompleted, setTrickCompleted] = useState(false);
@@ -191,7 +191,7 @@ export default function Page() {
     const base = `Target ${target} (${noTrumpSeen ? "no-trump bid seen" : "no no-trump bids yet"})`;
     setWinningStatus(winnerTeamLabel ? `${base} | Winner: ${winnerTeamLabel} (bid out)` : `${base} | No winner yet`);
 
-    setThisHand(`${team0Label}: ${scoreboard.hand?.tricks?.team0 ?? 0} tricks (${scoreboard.hand?.points?.team0 ?? 0} points)\n${team1Label}: ${scoreboard.hand?.tricks?.team1 ?? 0} tricks (${scoreboard.hand?.points?.team1 ?? 0} points)`);
+    setThisHand(`${team0Label}:${scoreboard.hand?.tricks?.team0 ?? 0} tr (${scoreboard.hand?.points?.team0 ?? 0} pts)\n${team1Label}:${scoreboard.hand?.tricks?.team1 ?? 0} tr (${scoreboard.hand?.points?.team1 ?? 0} pts)`);
 
     const nextTrickNumber = scoreboard.hand?.trick_number ?? 1;
     setTrickNumber(nextTrickNumber);
@@ -318,6 +318,10 @@ export default function Page() {
       if (typeof data.message === "string") {
         if (data.message.startsWith("Dealt 8 cards") || data.message.startsWith("Starting next hand") || data.message.startsWith("Game restarted")) {
           setBidProgression([]);
+          setTrickPlayHistory([]);
+          setTrickNumber((prev) => prev + 1);
+          trickCompletedRef.current = false;
+          setTrickCompleted(false);
         }
         if (data.message.includes(" played ")) {
           const playedLine = data.message.split("|")[0].trim();
@@ -433,7 +437,7 @@ export default function Page() {
                 {connected ? "Connected" : "Disconnected"}
               </span>
               {connected && (
-                <button className="chip border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200" onClick={connect}>Disconnect</button>
+                <button className="chip border-rose-300 bg-rose-100 text-rose-900 transition hover:bg-rose-200" onClick={connect}>Disconnect</button>
               )}
             </div>
           </div>
@@ -466,7 +470,19 @@ export default function Page() {
                 <button className="chip border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
               )}
               {roomReady && currentPhase === "hand_over" && (
-                <button className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800" onClick={() => send({ action: "next_hand" })}>Start Next Hand</button>
+                <button
+                  className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800"
+                  onClick={() => {
+                    // Reflect next-hand transition immediately in the trick panel.
+                    setTrickPlayHistory([]);
+                    setTrickNumber((prev) => prev + 1);
+                    trickCompletedRef.current = false;
+                    setTrickCompleted(false);
+                    send({ action: "next_hand" });
+                  }}
+                >
+                  Start Next Hand
+                </button>
               )}
             </div>
           </article>
