@@ -66,10 +66,12 @@ export default function Page() {
   const [roomReady, setRoomReady] = useState(false);
   const [currentPhase, setCurrentPhase] = useState("idle");
   const [dealerIndex, setDealerIndex] = useState<number | null>(null);
+  const [dealerName, setDealerName] = useState("Unknown");
   const [playerIndex, setPlayerIndex] = useState<number | null>(null);
   const [turnName, setTurnName] = useState("Unknown");
   const [turnContext, setTurnContext] = useState<string | null>(null);
   const [scoreSummary, setScoreSummary] = useState("-");
+  const [sessionWinsSummary, setSessionWinsSummary] = useState("-");
   const [winningStatus, setWinningStatus] = useState("Target 52 (no no-trump bids yet)");
   const [thisHand, setThisHand] = useState("Team 1: 0 tricks (0 points)\nTeam 2: 0 tricks (0 points)");
   const [trickNumber, setTrickNumber] = useState(1);
@@ -174,7 +176,13 @@ export default function Page() {
 
     const team0Label = scoreboard.team_labels?.team0 ?? "Team 1";
     const team1Label = scoreboard.team_labels?.team1 ?? "Team 2";
-    setScoreSummary(`${team0Label} (${scoreboard.game_score?.team0 ?? 0}), ${team1Label} (${scoreboard.game_score?.team1 ?? 0})`);
+    const liveScore0 = scoreboard.live_game_score?.team0 ?? scoreboard.game_score?.team0 ?? 0;
+    const liveScore1 = scoreboard.live_game_score?.team1 ?? scoreboard.game_score?.team1 ?? 0;
+    setScoreSummary(`${team0Label} (${liveScore0}), ${team1Label} (${liveScore1})`);
+
+    const sessionWins0 = scoreboard.session_wins?.team0 ?? 0;
+    const sessionWins1 = scoreboard.session_wins?.team1 ?? 0;
+    setSessionWinsSummary(`${team0Label} ${sessionWins0}, ${team1Label} ${sessionWins1}`);
 
     const winning = scoreboard.winning ?? {};
     const target = winning.target ?? 52;
@@ -187,6 +195,10 @@ export default function Page() {
 
     const nextTrickNumber = scoreboard.hand?.trick_number ?? 1;
     setTrickNumber(nextTrickNumber);
+
+    if (typeof scoreboard.dealer_name === "string" && scoreboard.dealer_name.length > 0) {
+      setDealerName(scoreboard.dealer_name);
+    }
 
     const bid = scoreboard.bid;
     if (!bid) {
@@ -257,7 +269,13 @@ export default function Page() {
       if (typeof data.current_player_name === "string") {
         setTurnName(data.turn_context === "idle" ? `Dealer - ${data.current_player_name}` : data.current_player_name);
       }
-      if (data.turn_context) setTurnContext(data.turn_context);
+      if (data.turn_context) {
+        setTurnContext(data.turn_context);
+        // Keep phase chip in sync even when payloads omit scoreboard.
+        if (data.turn_context === "playing" || data.turn_context === "bidding") {
+          setCurrentPhase(data.turn_context);
+        }
+      }
 
       switch (data.type) {
         case "joined":
@@ -435,26 +453,27 @@ export default function Page() {
           )}
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <article className="info-card animate-enter">
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[0.6fr,1.2fr,2fr]">
+          <article className="info-card animate-enter py-2.5">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Turn</p>
-            <p className="mt-2 text-base font-semibold">{turnName}</p>
+            <p className="mt-1.5 text-base font-semibold">{turnName}</p>
           </article>
-          <article className="info-card animate-enter">
+          <article className="info-card animate-enter py-2.5">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Phase</p>
-            <p className="mt-2"><span className={phaseChipClasses()}>{phaseLabel}</span></p>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <p className="mt-1.5"><span className={phaseChipClasses()}>{phaseLabel}</span></p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
               {isHost && roomReady && (
-                <button className="btn-secondary" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
+                <button className="chip border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
               )}
               {roomReady && currentPhase === "hand_over" && (
-                <button className="btn-primary" onClick={() => send({ action: "next_hand" })}>Start Next Hand</button>
+                <button className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800" onClick={() => send({ action: "next_hand" })}>Start Next Hand</button>
               )}
             </div>
           </article>
-          <article className="info-card animate-enter sm:col-span-2 xl:col-span-2">
+          <article className="info-card animate-enter py-2.5 sm:col-span-2 xl:col-span-1">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Live Score</p>
-            <p className="mt-2 text-base font-semibold">{scoreSummary}</p>
+            <p className="mt-1.5 text-base font-semibold">{scoreSummary}</p>
+            <p className="mt-1 text-sm text-soft">Session Wins: {sessionWinsSummary}</p>
             <p className="mt-1 text-sm text-soft">{winningStatus}</p>
           </article>
         </section>
@@ -484,10 +503,10 @@ export default function Page() {
                     >
                       <option value="">Select...</option>
                       {(setupInfo?.human_options ?? []).map((h) => (
-                        <option key={h.id} value={h.id}>{h.name}</option>
+                        <option key={h.id} value={h.id}>{h.name} (human)</option>
                       ))}
                       {(setupInfo?.bot_options ?? []).map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
+                        <option key={b.id} value={b.id}>{b.name} (AI)</option>
                       ))}
                     </select>
                   ) : (
@@ -523,7 +542,7 @@ export default function Page() {
             <section className="panel animate-enter">
               <h2 className="mb-3 text-lg font-semibold">Round Snapshot</h2>
               <div className="grid gap-3 md:grid-cols-3">
-                <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}{thisHand}</pre>
+                <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Dealer: {dealerName}{"\n"}{thisHand}</pre>
                 <pre className="mono-block whitespace-pre-wrap"><strong>This Trick</strong>{"\n"}{thisTrickText}</pre>
                 <div className="mono-block whitespace-pre-wrap">
                   <strong>Bid</strong>

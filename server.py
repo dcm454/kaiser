@@ -51,6 +51,8 @@ class GameRoom:
         self.host_player_index: Optional[int] = None
         self.setup_complete: bool = False
         self.ready = False
+        self.session_wins: List[int] = [0, 0]
+        self.current_game_winner_recorded: bool = False
 
     def _recompute_ready(self) -> None:
         self.ready = (len(self.players) + len(self.bot_policies)) == 4
@@ -184,11 +186,20 @@ class GameRoom:
         self.bot_policies = {}
         self.bot_personas = {}
         self.setup_complete = False
+        self.current_game_winner_recorded = False
         for seat in range(4):
             if seat in self.players:
                 name = self.player_names.get(seat, f"Player {seat + 1}")
                 self.game.players[seat].name = name
         self._recompute_ready()
+
+    def record_winner_if_needed(self) -> None:
+        winner = self.game.winning_team_index
+        if winner is None or self.current_game_winner_recorded:
+            return
+        if winner in (0, 1):
+            self.session_wins[winner] += 1
+            self.current_game_winner_recorded = True
 
     def room_payload(self) -> dict:
         roster = []
@@ -329,9 +340,16 @@ class GameServer:
             "turn_context": "idle",
         }
 
-    def _scoreboard_payload(self, game: KaiserGame) -> dict:
+    def _scoreboard_payload(self, game: KaiserGame, room: Optional[GameRoom] = None) -> dict:
         team0_label = f"{game.players[0].name}/{game.players[2].name}"
         team1_label = f"{game.players[1].name}/{game.players[3].name}"
+
+        if game.phase == "hand_over":
+            live_game_team0 = game.game_score[0]
+            live_game_team1 = game.game_score[1]
+        else:
+            live_game_team0 = game.game_score[0] + game.team_points[0]
+            live_game_team1 = game.game_score[1] + game.team_points[1]
 
         bid = None
         bid_source = game.highest_bid if game.highest_bid is not None else game.contract
@@ -365,6 +383,14 @@ class GameServer:
                 "game_score": {
                     "team0": game.game_score[0],
                     "team1": game.game_score[1],
+                },
+                "live_game_score": {
+                    "team0": live_game_team0,
+                    "team1": live_game_team1,
+                },
+                "session_wins": {
+                    "team0": room.session_wins[0] if room is not None else 0,
+                    "team1": room.session_wins[1] if room is not None else 0,
                 },
                 "hand": {
                     "tricks": {
@@ -432,7 +458,7 @@ class GameServer:
                                 "reason": reason,
                             },
                             **self._turn_payload(game),
-                            **self._scoreboard_payload(game),
+                            **self._scoreboard_payload(game, room),
                             **room.room_payload(),
                         }
                     )
@@ -445,7 +471,7 @@ class GameServer:
                                 "message": "Bidding complete. Play phase started.",
                                 "trick": game.trick_summary(),
                                 **self._turn_payload(game),
-                                **self._scoreboard_payload(game),
+                                **self._scoreboard_payload(game, room),
                                 **room.room_payload(),
                             }
                         )
@@ -454,6 +480,7 @@ class GameServer:
                 else:
                     action, payload, reason = bot_policy.choose_play_card(game, seat)
                     result = game.play_card(str(payload["card"]))
+                    room.record_winner_if_needed()
                     await room.broadcast(
                         {
                             "type": "game_update",
@@ -466,7 +493,7 @@ class GameServer:
                                 "reason": reason,
                             },
                             **self._turn_payload(game),
-                            **self._scoreboard_payload(game),
+                            **self._scoreboard_payload(game, room),
                             **room.room_payload(),
                         }
                     )
@@ -479,7 +506,7 @@ class GameServer:
                                 "message": "Hand complete.",
                                 "trick": game.trick_summary(),
                                 "state": game.state_summary(),
-                                **self._scoreboard_payload(game),
+                                **self._scoreboard_payload(game, room),
                                 **room.room_payload(),
                             }
                         )
@@ -492,7 +519,7 @@ class GameServer:
                         "type": "game_update",
                         "message": f"Bot action failed for {bot_name}: {exc}",
                         **self._turn_payload(game),
-                        **self._scoreboard_payload(game),
+                        **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     }
                 )
@@ -538,7 +565,7 @@ class GameServer:
                 "is_host": player_index == room.host_player_index,
                 "setup_required": (player_index == room.host_player_index and not room.setup_complete),
                 **self._turn_payload(room.game),
-                **self._scoreboard_payload(room.game),
+                **self._scoreboard_payload(room.game, room),
                 **room.room_payload(),
             }))
             
@@ -550,7 +577,7 @@ class GameServer:
                 "players_count": len(room.players),
                 "ready": room.ready,
                 **self._turn_payload(room.game),
-                **self._scoreboard_payload(room.game),
+                **self._scoreboard_payload(room.game, room),
                 **room.room_payload(),
             }, exclude=websocket)
             
@@ -586,7 +613,7 @@ class GameServer:
                         "players_count": len(room.players),
                         "ready": room.ready,
                         **self._turn_payload(room.game),
-                        **self._scoreboard_payload(room.game),
+                        **self._scoreboard_payload(room.game, room),
                         **room.room_payload(),
                     })
     
@@ -633,7 +660,7 @@ class GameServer:
                     "message": f"Game setup complete. Virtual players added: {added_names}.",
                     "added_bots": added,
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
 
@@ -646,7 +673,7 @@ class GameServer:
                             "is_host": seat == room.host_player_index,
                             "setup_required": (seat == room.host_player_index and not room.setup_complete),
                             **self._turn_payload(game),
-                            **self._scoreboard_payload(game),
+                            **self._scoreboard_payload(game, room),
                             **room.room_payload(),
                         },
                     )
@@ -656,7 +683,7 @@ class GameServer:
                     "type": "state",
                     "content": game.state_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 }))
             
@@ -673,7 +700,7 @@ class GameServer:
                     "state": game.state_summary(),
                     "phase": game.phase,
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 # Send each player their hand privately
@@ -694,7 +721,7 @@ class GameServer:
                     "state": game.state_summary(),
                     "phase": game.phase,
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 await self._send_hands_to_humans(room)
@@ -711,7 +738,7 @@ class GameServer:
                     "state": game.state_summary(),
                     "phase": game.phase,
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
             
@@ -727,7 +754,7 @@ class GameServer:
                     "type": "bidding",
                     "content": game.bidding_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 }))
             
@@ -742,7 +769,7 @@ class GameServer:
                     "phase": game.phase,
                     "bidding": game.bidding_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 if game.phase == "playing":
@@ -752,7 +779,7 @@ class GameServer:
                         "message": "Bidding complete. Play phase started.",
                         "trick": game.trick_summary(),
                         **self._turn_payload(game),
-                        **self._scoreboard_payload(game),
+                        **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
                 run_bots_after = True
@@ -766,7 +793,7 @@ class GameServer:
                     "phase": game.phase,
                     "bidding": game.bidding_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 if game.phase == "playing":
@@ -776,7 +803,7 @@ class GameServer:
                         "message": "Bidding complete. Play phase started.",
                         "trick": game.trick_summary(),
                         **self._turn_payload(game),
-                        **self._scoreboard_payload(game),
+                        **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
                 run_bots_after = True
@@ -793,7 +820,7 @@ class GameServer:
                     "phase": game.phase,
                     "bidding": game.bidding_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 if game.phase == "playing":
@@ -803,7 +830,7 @@ class GameServer:
                         "message": "Bidding complete. Play phase started.",
                         "trick": game.trick_summary(),
                         **self._turn_payload(game),
-                        **self._scoreboard_payload(game),
+                        **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
                 run_bots_after = True
@@ -821,6 +848,7 @@ class GameServer:
                 require_active_player()
                 card_token = data.get("card")
                 result = game.play_card(card_token)
+                room.record_winner_if_needed()
                 await room.broadcast({
                     "type": "game_update",
                     "message": result,
