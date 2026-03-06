@@ -18,22 +18,22 @@ BOT_PERSONAS: List[dict] = [
     {
         "name": "Anne",
         "profile": "balanced",
-        "bio": "Balanced style. Anne reads the table and avoids wild swings. Off-table she is the organized one who always brings score sheets and snacks.",
+        "bio": "Balanced bidding. Anne reads the table and avoids wild swings. Off-table she is the organized one who always brings score sheets and snacks.",
     },
     {
         "name": "Vivian",
         "profile": "cautious",
-        "bio": "Cautious style. Vivian values safe contracts and disciplined card management. She is thoughtful, observant, and quietly competitive.",
+        "bio": "Cautious bidding. Vivian values safe contracts and disciplined card management. She is thoughtful, observant, and quietly competitive.",
     },
     {
         "name": "Nelson",
         "profile": "chaotic",
-        "bio": "Chaotic style. Nelson brings unpredictable lines and momentum plays. Around the table he keeps things lively with playful banter.",
+        "bio": "Chaotic bidding style. Nelson brings unpredictable lines and momentum plays. Around the table he keeps things lively with playful banter.",
     },
     {
         "name": "Edward",
         "profile": "aggressive",
-        "bio": "Aggressive style. Edward pushes bids and pressures opponents early. Socially he is bold, confident, and loves high-stakes moments.",
+        "bio": "Aggressive bidding style. Edward pushes bids and pressures opponents early. Socially he is bold, confident, and loves high-stakes moments.",
     },
 ]
 
@@ -181,12 +181,13 @@ class GameRoom:
 
     def restart_game(self) -> None:
         self.game = KaiserGame.new_default()
+        self.bot_policies = {}
+        self.bot_personas = {}
+        self.setup_complete = False
         for seat in range(4):
             if seat in self.players:
                 name = self.player_names.get(seat, f"Player {seat + 1}")
                 self.game.players[seat].name = name
-            elif seat in self.bot_personas:
-                self.game.players[seat].name = self.bot_personas[seat]["name"]
         self._recompute_ready()
 
     def room_payload(self) -> dict:
@@ -706,7 +707,7 @@ class GameServer:
                 game = room.game
                 await room.broadcast({
                     "type": "game_update",
-                    "message": "Game restarted. Scores reset. Dealer may deal when ready.",
+                    "message": "Game reset. Room returned to setup. Assign seats to start again.",
                     "state": game.state_summary(),
                     "phase": game.phase,
                     **self._turn_payload(game),

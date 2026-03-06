@@ -443,6 +443,14 @@ export default function Page() {
           <article className="info-card animate-enter">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Phase</p>
             <p className="mt-2"><span className={phaseChipClasses()}>{phaseLabel}</span></p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {isHost && roomReady && (
+                <button className="btn-secondary" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
+              )}
+              {roomReady && currentPhase === "hand_over" && (
+                <button className="btn-primary" onClick={() => send({ action: "next_hand" })}>Start Next Hand</button>
+              )}
+            </div>
           </article>
           <article className="info-card animate-enter sm:col-span-2 xl:col-span-2">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Live Score</p>
@@ -476,10 +484,10 @@ export default function Page() {
                     >
                       <option value="">Select...</option>
                       {(setupInfo?.human_options ?? []).map((h) => (
-                        <option key={h.id} value={h.id}>{h.name} (human)</option>
+                        <option key={h.id} value={h.id}>{h.name}</option>
                       ))}
                       {(setupInfo?.bot_options ?? []).map((b) => (
-                        <option key={b.id} value={b.id}>{b.name} ({displayProfileLabel(b.profile)})</option>
+                        <option key={b.id} value={b.id}>{b.name}</option>
                       ))}
                     </select>
                   ) : (
@@ -536,14 +544,6 @@ export default function Page() {
             {roomReady && (
               <section className="panel animate-enter space-y-4">
                 <div className="flex flex-wrap gap-2">
-                  {isHost && (
-                    <button className="btn-secondary" onClick={() => send({ action: "restart_game" })}>Restart Game</button>
-                  )}
-
-                  {currentPhase === "hand_over" && (
-                    <button className="btn-primary" onClick={() => send({ action: "next_hand" })}>Start Next Hand</button>
-                  )}
-
                   {currentPhase === "idle" && dealerIndex === playerIndex && (
                     <>
                       <button className="btn-primary" onClick={() => send({ action: "deal" })}>Deal</button>
