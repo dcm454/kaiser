@@ -93,6 +93,7 @@ export default function Page() {
   const [contractTrump, setContractTrump] = useState("clubs");
   const [helpOpen, setHelpOpen] = useState(false);
   const [joinRejection, setJoinRejection] = useState<string | null>(null);
+  const [handActionError, setHandActionError] = useState<string | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
 
@@ -112,6 +113,16 @@ export default function Page() {
       return;
     }
     ws.send(JSON.stringify(payload));
+  };
+
+  const isHandValidationError = (message: string) => {
+    const lowered = message.toLowerCase();
+    return (
+      lowered.includes("must follow suit") ||
+      lowered.includes("not your turn to play") ||
+      lowered.includes("play phase is not active") ||
+      lowered.includes("does not have card")
+    );
   };
 
   const applyRoomPayload = (data: RoomPayload, effectivePlayerIndex: number | null, effectiveIsHost: boolean) => {
@@ -260,6 +271,7 @@ export default function Page() {
 
   const connect = () => {
     setJoinRejection(null);
+    setHandActionError(null);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close();
       setWs(null);
@@ -282,12 +294,18 @@ export default function Page() {
       let nextPlayerIndex = playerIndex;
       let nextIsHost = isHost;
       if (data.error) {
-        if (typeof data.error === "string" && data.error.toLowerCase().includes("room is full")) {
+        const errorText = typeof data.error === "string" ? data.error : String(data.error);
+        const lowered = errorText.toLowerCase();
+        if (lowered.includes("room is full")) {
           setJoinRejection("That game is full (4 players already connected). Try a new game name to start or join another table.");
+          setHandActionError(null);
+        } else if (isHandValidationError(errorText)) {
+          setJoinRejection(null);
+          setHandActionError(errorText);
         } else {
-          setJoinRejection(data.error);
+          setJoinRejection(errorText);
         }
-        appendLog(`Error: ${data.error}`);
+        appendLog(`Error: ${errorText}`);
         return;
       }
 
@@ -359,6 +377,7 @@ export default function Page() {
           setTrickCompleted(false);
         }
         if (data.message.includes(" played ")) {
+          setHandActionError(null);
           const playedLine = data.message.split("|")[0].trim();
           if (data.message.includes("| Trick won by ")) {
             setTrickPlayHistory((prev) => [...prev, playedLine]);
@@ -382,6 +401,27 @@ export default function Page() {
 
       applyRoomPayload(data, nextPlayerIndex, nextIsHost);
       renderScoreboard(data);
+
+      if (data.bot_action && typeof data.bot_action.bot_name === "string") {
+        const botName = data.bot_action.bot_name;
+        const action = data.bot_action.action ?? "action";
+        const reason = typeof data.bot_action.reason === "string" ? data.bot_action.reason : "";
+        const debug = data.bot_action.debug ?? {};
+
+        const parts: string[] = [`BOT ${botName}: ${action}`];
+        if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
+          parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
+        }
+        if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
+          parts.push(`hand=${debug.hand_cards.join(" ")}`);
+        }
+        if (typeof debug.play_reason === "string" && debug.play_reason.length > 0) {
+          parts.push(`play_reason=${debug.play_reason}`);
+        } else if (reason.length > 0) {
+          parts.push(`reason=${reason}`);
+        }
+        appendLog(parts.join(" | "));
+      }
     };
 
     socket.onclose = () => {
@@ -668,6 +708,11 @@ export default function Page() {
 
                 <div>
                   <h3 className="mb-2 text-base font-semibold">Your Hand</h3>
+                  {handActionError && (
+                    <div className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+                      {handActionError}
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
                     {cards.map((card) => (
                       <button

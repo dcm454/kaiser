@@ -472,7 +472,20 @@ function handleMessage(data) {
       if (data.bidding) addLog(data.bidding);
       if (data.trick) addLog(data.trick);
       if (data.bot_action && data.bot_action.bot_name) {
-        addLog(`🤖 ${data.bot_action.bot_name}: ${data.bot_action.action}`);
+        const debug = data.bot_action.debug || {};
+        const parts = [`🤖 ${data.bot_action.bot_name}: ${data.bot_action.action}`];
+        if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
+          parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
+        }
+        if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
+          parts.push(`hand=${debug.hand_cards.join(" ")}`);
+        }
+        if (debug.play_reason) {
+          parts.push(`play_reason=${debug.play_reason}`);
+        } else if (data.bot_action.reason) {
+          parts.push(`reason=${data.bot_action.reason}`);
+        }
+        addLog(parts.join(" | "));
       }
       break;
     case "phase_change":

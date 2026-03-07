@@ -97,6 +97,10 @@ class BotPolicy:
     def _partner_index(player_index: int) -> int:
         return (player_index + 2) % 4
 
+    @staticmethod
+    def _hand_cards_short(hand: List[Card]) -> List[str]:
+        return [card.short() for card in hand]
+
     def _all_other_hearts_played(self, game: KaiserGame) -> bool:
         # "Other hearts" means any heart except the special 5h.
         for player in game.players:
@@ -145,13 +149,21 @@ class BotPolicy:
         highest_value = highest.value if highest else 0
 
         reason = f"best_trump={best_trump}, strength={best_strength:.1f}, projected_bid={projected_bid}"
+        debug = {
+            "hand_cards": self._hand_cards_short(hand),
+            "bid_strength_best": round(best_strength, 2),
+            "bid_strength_best_trump": best_trump,
+            "bid_strength_by_trump": {trump: round(score, 2) for trump, score in strengths.items()},
+            "projected_bid": projected_bid,
+            "current_highest_bid": highest_value,
+        }
 
         if highest is None:
-            return "bid", {"value": projected_bid}, reason
+            return "bid", {"value": projected_bid, "__debug": debug}, reason
 
         min_needed = highest_value + 1 + self.profile.bid_risk_buffer
         if projected_bid >= min_needed:
-            return "bid", {"value": projected_bid}, reason
+            return "bid", {"value": projected_bid, "__debug": debug}, reason
 
         is_dealer_turn = player_index == game.dealer_index == game.bid_turn_index
         projected_can_match_current_bid = projected_bid >= highest_value
@@ -161,12 +173,12 @@ class BotPolicy:
                 high_confidence_threshold = self.profile.dealer_take_threshold + 12.0
                 can_confidently_support_current_bid = projected_bid >= highest_value
                 if best_strength >= high_confidence_threshold and can_confidently_support_current_bid:
-                    return "take", {}, f"{reason}, partner_take_high_confidence"
-                return "pass", {}, f"{reason}, avoid_partner_take"
+                    return "take", {"__debug": debug}, f"{reason}, partner_take_high_confidence"
+                return "pass", {"__debug": debug}, f"{reason}, avoid_partner_take"
 
-            return "take", {}, reason
+            return "take", {"__debug": debug}, reason
 
-        return "pass", {}, reason
+        return "pass", {"__debug": debug}, reason
 
     def choose_trump_action(self, game: KaiserGame, player_index: int) -> Tuple[str, Dict[str, object], str]:
         hand = game.players[player_index].hand
@@ -174,7 +186,13 @@ class BotPolicy:
         best_trump = max(strengths, key=lambda t: strengths[t])
         best_strength = strengths[best_trump]
         reason = f"select_best_trump={best_trump}, strength={best_strength:.1f}"
-        return "choose_trump", {"trump": best_trump}, reason
+        debug = {
+            "hand_cards": self._hand_cards_short(hand),
+            "bid_strength_best": round(best_strength, 2),
+            "bid_strength_best_trump": best_trump,
+            "bid_strength_by_trump": {trump: round(score, 2) for trump, score in strengths.items()},
+        }
+        return "choose_trump", {"trump": best_trump, "__debug": debug}, reason
 
     def _current_partial_winner(self, game: KaiserGame) -> Optional[Tuple[int, Card]]:
         if not game.current_trick:
@@ -223,6 +241,31 @@ class BotPolicy:
             return False
         return self._rank_value(card) > self._rank_value(winner_card)
 
+    def _team_wins_trick_after_play(self, game: KaiserGame, player_index: int, card: Card) -> bool:
+        """Conservative certainty check used for protecting 5H.
+
+        We only treat the trick as secure if this play closes the trick and the
+        resulting winner is on the current player's team.
+        """
+        plays_before = len(game.current_trick)
+        plays_after = plays_before + 1
+        trick_size = len(game.players)
+
+        # If others still act after this play, outcome is not certain.
+        if plays_after < trick_size:
+            return False
+
+        # Last card of the trick: winner is now deterministic from visible cards.
+        if self._would_currently_win(game, card):
+            winner_index = player_index
+        else:
+            current_winner = self._current_partial_winner(game)
+            if current_winner is None:
+                return False
+            winner_index = current_winner[0]
+
+        return (winner_index % 2) == (player_index % 2)
+
     def choose_play_card(self, game: KaiserGame, player_index: int) -> Tuple[str, Dict[str, object], str]:
         player = game.players[player_index]
         hand = list(player.hand)
@@ -244,9 +287,6 @@ class BotPolicy:
 
         # Special-card directives for 5h and 3s override baseline heuristics.
         if five_hearts is not None and lead_card is not None:
-            if lead_index == partner_index and lead_card.suit == "hearts" and lead_card.rank == "A":
-                return "play", {"card": self._card_to_token(five_hearts)}, "rule_5h_partner_led_ah"
-
             opponent_led_hearts = (lead_card.suit == "hearts") and (lead_index % 2 != player_index % 2)
             if opponent_led_hearts and len(legal) > 1:
                 legal_wo_5h = [c for c in legal if not self._is_card(c, "5", "hearts")]
@@ -260,8 +300,18 @@ class BotPolicy:
                 legal = legal_wo_5h
                 five_hearts = None
 
+        # Protect 5H unless team is certain to take this trick after this play.
+        if five_hearts is not None and len(legal) > 1:
+            team_secures_trick = self._team_wins_trick_after_play(game, player_index, five_hearts)
+            if not team_secures_trick:
+                legal_wo_5h = [c for c in legal if not self._is_card(c, "5", "hearts")]
+                if legal_wo_5h:
+                    legal = legal_wo_5h
+                    five_hearts = None
+
         current_winner = self._current_partial_winner(game)
         partner_winning = current_winner is not None and current_winner[0] == partner_index
+        three_spades_in_trick = any(self._is_card(card, "3", "spades") for _, card in game.current_trick)
 
         if three_spades is not None and len(legal) > 1:
             if partner_winning:
@@ -278,6 +328,13 @@ class BotPolicy:
                     three_spades = None
 
         contract_trump = game.contract.trump if game.contract else "no-trump"
+
+        # If 3S is already in this trick, prioritize avoiding a trick win.
+        if three_spades_in_trick and len(legal) > 1:
+            losing_cards = [c for c in legal if not self._would_currently_win(game, c)]
+            if losing_cards:
+                target = min(losing_cards, key=self._rank_value)
+                return "play", {"card": self._card_to_token(target)}, "avoid_winning_3s_trick"
 
         winning_cards = [c for c in legal if self._would_currently_win(game, c)]
         lowest_legal = min(legal, key=self._rank_value)
@@ -311,7 +368,11 @@ class BotPolicy:
             reason += " + jitter"
 
         token = self._card_to_token(target)
-        return "play", {"card": token}, reason
+        debug = {
+            "hand_cards_before_play": self._hand_cards_short(player.hand),
+            "play_reason": reason,
+        }
+        return "play", {"card": token, "__debug": debug}, reason
 
     @staticmethod
     def _card_to_token(card: Card) -> str:
@@ -333,6 +394,29 @@ class BotSimulator:
         self.seed = seed
         self.decisions: List[DecisionRecord] = []
 
+    @staticmethod
+    def _hand_snapshot(game: KaiserGame, player_index: int) -> List[str]:
+        return [card.short() for card in game.players[player_index].hand]
+
+    @staticmethod
+    def _bidding_debug_payload(policy: BotPolicy, game: KaiserGame, player_index: int) -> Dict[str, object]:
+        hand = game.players[player_index].hand
+        strengths = policy._hand_strength_by_trump(hand)
+        best_trump = max(strengths, key=lambda t: strengths[t])
+        best_strength = strengths[best_trump]
+        projected_bid = int((best_strength / 8.0) * policy.profile.bid_aggression)
+        projected_bid = policy._clamp_bid(projected_bid)
+        highest_value = game.highest_bid.value if game.highest_bid is not None else 0
+
+        return {
+            "hand_cards": [card.short() for card in hand],
+            "bid_strength_best": round(best_strength, 2),
+            "bid_strength_best_trump": best_trump,
+            "bid_strength_by_trump": {trump: round(score, 2) for trump, score in strengths.items()},
+            "projected_bid": projected_bid,
+            "current_highest_bid": highest_value,
+        }
+
     def run(self, hands: int) -> Tuple[KaiserGame, int]:
         if self.seed is not None:
             random.seed(self.seed)
@@ -349,8 +433,9 @@ class BotSimulator:
             while game.phase == "bidding":
                 idx = game.bid_turn_index
                 action, payload, reason = self.policies[idx].choose_bid_action(game, idx)
+                log_payload = {**payload, **self._bidding_debug_payload(self.policies[idx], game, idx)}
                 self._apply_bidding_action(game, idx, action, payload)
-                self._log(hand_no, game.trick_number, "bidding", game.players[idx].name, action, payload, reason)
+                self._log(hand_no, game.trick_number, "bidding", game.players[idx].name, action, log_payload, reason)
 
             while game.phase == "choosing_trump":
                 idx = game.trump_select_index
@@ -361,8 +446,13 @@ class BotSimulator:
             while game.phase == "playing":
                 idx = game.play_turn_index
                 action, payload, reason = self.policies[idx].choose_play_card(game, idx)
+                log_payload = {
+                    **payload,
+                    "play_reason": reason,
+                    "hand_cards_before_play": self._hand_snapshot(game, idx),
+                }
                 self._apply_play_action(game, idx, action, payload)
-                self._log(hand_no, game.trick_number, "playing", game.players[idx].name, action, payload, reason)
+                self._log(hand_no, game.trick_number, "playing", game.players[idx].name, action, log_payload, reason)
 
             self._log(
                 hand_no,
