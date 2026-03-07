@@ -226,9 +226,10 @@ class KaiserGame:
         self.bids_made += 1
 
         bidder = self.players[self.bid_turn_index].name
-        item = f"{bidder}: {value} {trump}"
+        # During bidding, only disclose bid value publicly; trump stays hidden until contract is awarded.
+        item = f"{bidder}: {value}"
         self.bid_history.append(item)
-        self.last_bid = f"{value} {trump}"
+        self.last_bid = f"{value}"
 
         if self.bid_turn_index == self.dealer_index:
             self._finalize_bidding()
@@ -379,8 +380,14 @@ class KaiserGame:
         else:
             self.game_score[contracting_team] -= self.contract.value * score_multiplier
         
-        # Defending team: always gets points won
-        self.game_score[defending_team] += self.team_points[defending_team]
+        # Defending team: all-or-nothing at current game target (52/64).
+        # If this hand's defending points would push them past target,
+        # award none of those points.
+        target = self._winning_score_target()
+        defending_award = self.team_points[defending_team]
+        if self.game_score[defending_team] + defending_award > target:
+            defending_award = 0
+        self.game_score[defending_team] += defending_award
         self._update_winner_after_hand(contracting_team)
 
     def _winning_score_target(self) -> int:
@@ -405,7 +412,10 @@ class KaiserGame:
             lines.extend(self.bid_history)
         if self.highest_bid is not None:
             leader = self.players[self.highest_bid.player_index].name
-            lines.append(f"Highest: {self.highest_bid.value} {self.highest_bid.trump} by {leader}")
+            if self.phase == "bidding":
+                lines.append(f"Highest: {self.highest_bid.value} by {leader}")
+            else:
+                lines.append(f"Highest: {self.highest_bid.value} {self.highest_bid.trump} by {leader}")
         if self.phase == "bidding":
             lines.append(f"Next bidder: {self.current_bidder().name}")
             lines.append(f"Bids made: {self.bids_made}/4")

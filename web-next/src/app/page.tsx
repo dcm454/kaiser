@@ -205,7 +205,11 @@ export default function Page() {
       setBidText("No bid yet");
       setWinningBidPatterns([]);
     } else {
-      setBidText(`${bid.value} ${bid.trump} by ${bid.declarer}`);
+      if (bid.trump === "hidden") {
+        setBidText(`${bid.value} by ${bid.declarer}`);
+      } else {
+        setBidText(`${bid.value} ${bid.trump} by ${bid.declarer}`);
+      }
       setWinningBidPatterns([
         `${bid.declarer}: ${bid.value} ${bid.trump}`,
         `${bid.declarer}: take ${bid.value} ${bid.trump}`,

@@ -21,9 +21,9 @@ BOT_PERSONAS: List[dict] = [
         "bio": "Balanced bidding. Anne reads the table and avoids wild swings. Off-table she is the organized one who always brings score sheets and snacks.",
     },
     {
-        "name": "Vivian",
+        "name": "Lillian",
         "profile": "cautious",
-        "bio": "Cautious bidding. Vivian values safe contracts and disciplined card management. She is thoughtful, observant, and quietly competitive.",
+        "bio": "Cautious bidding. Lillian values safe contracts and disciplined card management. She is thoughtful, observant, and quietly competitive.",
     },
     {
         "name": "Nelson",
@@ -356,9 +356,10 @@ class GameServer:
         if bid_source is not None:
             declarer = game.players[bid_source.player_index].name
             team_index = bid_source.player_index % 2
+            bid_trump = bid_source.trump if game.phase != "bidding" else "hidden"
             bid = {
                 "value": bid_source.value,
-                "trump": bid_source.trump,
+                "trump": bid_trump,
                 "declarer": declarer,
                 "team_index": team_index,
                 "team_label": team0_label if team_index == 0 else team1_label,

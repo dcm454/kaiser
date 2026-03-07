@@ -71,7 +71,7 @@ It also includes a live scoreboard panel showing:
 
 Virtual players available in setup:
 - `Anne` (balanced)
-- `Vivian` (cautious)
+- `Lillian` (cautious)
 - `Nelson` (unpredictable)
 - `Edward` (aggressive)
 
