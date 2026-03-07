@@ -147,11 +147,11 @@ class BotPolicy:
         reason = f"best_trump={best_trump}, strength={best_strength:.1f}, projected_bid={projected_bid}"
 
         if highest is None:
-            return "bid", {"value": projected_bid, "trump": best_trump}, reason
+            return "bid", {"value": projected_bid}, reason
 
         min_needed = highest_value + 1 + self.profile.bid_risk_buffer
         if projected_bid >= min_needed:
-            return "bid", {"value": projected_bid, "trump": best_trump}, reason
+            return "bid", {"value": projected_bid}, reason
 
         is_dealer_turn = player_index == game.dealer_index == game.bid_turn_index
         projected_can_match_current_bid = projected_bid >= highest_value
@@ -161,12 +161,20 @@ class BotPolicy:
                 high_confidence_threshold = self.profile.dealer_take_threshold + 12.0
                 can_confidently_support_current_bid = projected_bid >= highest_value
                 if best_strength >= high_confidence_threshold and can_confidently_support_current_bid:
-                    return "take", {"trump": best_trump}, f"{reason}, partner_take_high_confidence"
+                    return "take", {}, f"{reason}, partner_take_high_confidence"
                 return "pass", {}, f"{reason}, avoid_partner_take"
 
-            return "take", {"trump": best_trump}, reason
+            return "take", {}, reason
 
         return "pass", {}, reason
+
+    def choose_trump_action(self, game: KaiserGame, player_index: int) -> Tuple[str, Dict[str, object], str]:
+        hand = game.players[player_index].hand
+        strengths = self._hand_strength_by_trump(hand)
+        best_trump = max(strengths, key=lambda t: strengths[t])
+        best_strength = strengths[best_trump]
+        reason = f"select_best_trump={best_trump}, strength={best_strength:.1f}"
+        return "choose_trump", {"trump": best_trump}, reason
 
     def _current_partial_winner(self, game: KaiserGame) -> Optional[Tuple[int, Card]]:
         if not game.current_trick:
@@ -344,6 +352,12 @@ class BotSimulator:
                 self._apply_bidding_action(game, idx, action, payload)
                 self._log(hand_no, game.trick_number, "bidding", game.players[idx].name, action, payload, reason)
 
+            while game.phase == "choosing_trump":
+                idx = game.trump_select_index
+                action, payload, reason = self.policies[idx].choose_trump_action(game, idx)
+                self._apply_trump_selection_action(game, idx, action, payload)
+                self._log(hand_no, game.trick_number, "choosing_trump", game.players[idx].name, action, payload, reason)
+
             while game.phase == "playing":
                 idx = game.play_turn_index
                 action, payload, reason = self.policies[idx].choose_play_card(game, idx)
@@ -380,15 +394,22 @@ class BotSimulator:
         if game.bid_turn_index != player_index:
             raise ValueError("Out-of-turn bidding action")
         if action == "bid":
-            game.place_bid(int(payload["value"]), str(payload["trump"]))
+            game.place_bid(int(payload["value"]))
             return
         if action == "take":
-            game.dealer_take_bid(str(payload["trump"]))
+            game.dealer_take_bid()
             return
         if action == "pass":
             game.pass_bid()
             return
         raise ValueError(f"Unsupported bidding action: {action}")
+
+    def _apply_trump_selection_action(self, game: KaiserGame, player_index: int, action: str, payload: Dict[str, object]) -> None:
+        if game.trump_select_index != player_index:
+            raise ValueError("Out-of-turn trump selection action")
+        if action != "choose_trump":
+            raise ValueError(f"Unsupported trump selection action: {action}")
+        game.choose_contract_trump(str(payload["trump"]))
 
     def _apply_play_action(self, game: KaiserGame, player_index: int, action: str, payload: Dict[str, object]) -> None:
         if game.play_turn_index != player_index:

@@ -147,6 +147,7 @@ class KaiserGame:
     current_deck: Optional[Deck] = None
     phase: str = "idle"
     bid_turn_index: int = 0
+    trump_select_index: int = 0
     highest_bid: Optional[Bid] = None
     bid_history: List[str] = field(default_factory=list)
     bids_made: int = 0
@@ -193,6 +194,7 @@ class KaiserGame:
     def _start_bidding_phase(self) -> None:
         self.phase = "bidding"
         self.bid_turn_index = (self.dealer_index + 1) % len(self.players)
+        self.trump_select_index = 0
         self.highest_bid = None
         self.contract = None
         self.bid_history.clear()
@@ -208,21 +210,17 @@ class KaiserGame:
     def current_bidder(self) -> Player:
         return self.players[self.bid_turn_index]
 
-    def place_bid(self, value: int, trump: str) -> str:
+    def place_bid(self, value: int) -> str:
         if self.phase != "bidding":
             raise ValueError("Bidding is not active")
         if value < BID_MIN or value > BID_MAX:
             raise ValueError(f"Bid value must be between {BID_MIN} and {BID_MAX}")
-        if trump not in TRUMP_ORDER:
-            raise ValueError("Trump must be one of: clubs, diamonds, hearts, spades, no-trump")
 
         if self.highest_bid is not None and value <= self.highest_bid.value:
             raise ValueError("Bid must be higher than current highest bid")
 
-        bid = Bid(value=value, trump=trump, player_index=self.bid_turn_index)
+        bid = Bid(value=value, trump="hidden", player_index=self.bid_turn_index)
         self.highest_bid = bid
-        if trump == "no-trump":
-            self.no_trump_bid_seen = True
         self.bids_made += 1
 
         bidder = self.players[self.bid_turn_index].name
@@ -256,33 +254,55 @@ class KaiserGame:
         self._advance_bidding_turn()
         return f"{bidder}: pass"
 
-    def dealer_take_bid(self, trump: str) -> str:
+    def dealer_take_bid(self) -> str:
         if self.phase != "bidding":
             raise ValueError("Bidding is not active")
         if self.bid_turn_index != self.dealer_index:
             raise ValueError("Only the dealer can take the highest bid")
         if self.highest_bid is None:
             raise ValueError("No highest bid to take")
-        if trump not in TRUMP_ORDER:
-            raise ValueError("Trump must be one of: clubs, diamonds, hearts, spades, no-trump")
 
         taken = Bid(
             value=self.highest_bid.value,
-            trump=trump,
+            trump="hidden",
             player_index=self.dealer_index,
         )
         self.highest_bid = taken
-        if trump == "no-trump":
-            self.no_trump_bid_seen = True
-        self.last_bid = f"{taken.value} {taken.trump}"
+        self.last_bid = f"{taken.value}"
         self.bids_made += 1
 
         dealer_name = self.dealer().name
-        item = f"{dealer_name}: take {taken.value} {taken.trump}"
+        item = f"{dealer_name}: take {taken.value}"
         self.bid_history.append(item)
 
         self._finalize_bidding()
         return f"{item} (dealer closed bidding)"
+
+    def current_trump_selector(self) -> Player:
+        return self.players[self.trump_select_index]
+
+    def choose_contract_trump(self, trump: str) -> str:
+        if self.phase != "choosing_trump":
+            raise ValueError("Trump selection is not active")
+        if trump not in TRUMP_ORDER:
+            raise ValueError("Trump must be one of: clubs, diamonds, hearts, spades, no-trump")
+        if self.highest_bid is None:
+            raise ValueError("No winning bid available for trump selection")
+
+        winner_index = self.highest_bid.player_index
+        declarer_name = self.players[winner_index].name
+        self.contract = Bid(value=self.highest_bid.value, trump=trump, player_index=winner_index)
+        self.highest_bid = self.contract
+        if trump == "no-trump":
+            self.no_trump_bid_seen = True
+        self.last_bid = f"{self.contract.value} {self.contract.trump}"
+        self.bid_history.append(f"{declarer_name}: trump {trump}")
+
+        self.phase = "playing"
+        self.trick_leader_index = self.contract.player_index
+        self.play_turn_index = self.trick_leader_index
+        self.current_trick.clear()
+        return f"{declarer_name} selected trump: {trump}"
 
     def _advance_bidding_turn(self) -> None:
         self.bid_turn_index = (self.bid_turn_index + 1) % len(self.players)
@@ -290,10 +310,9 @@ class KaiserGame:
     def _finalize_bidding(self) -> None:
         if self.highest_bid is None:
             raise ValueError("Cannot finalize bidding without a bid")
-        self.contract = self.highest_bid
-        self.phase = "playing"
-        self.trick_leader_index = self.contract.player_index
-        self.play_turn_index = self.trick_leader_index
+        self.contract = None
+        self.phase = "choosing_trump"
+        self.trump_select_index = self.highest_bid.player_index
         self.current_trick.clear()
 
     def current_player_to_play(self) -> Player:
@@ -412,13 +431,16 @@ class KaiserGame:
             lines.extend(self.bid_history)
         if self.highest_bid is not None:
             leader = self.players[self.highest_bid.player_index].name
-            if self.phase == "bidding":
+            if self.phase in ("bidding", "choosing_trump"):
                 lines.append(f"Highest: {self.highest_bid.value} by {leader}")
             else:
                 lines.append(f"Highest: {self.highest_bid.value} {self.highest_bid.trump} by {leader}")
         if self.phase == "bidding":
             lines.append(f"Next bidder: {self.current_bidder().name}")
             lines.append(f"Bids made: {self.bids_made}/4")
+        if self.phase == "choosing_trump":
+            lines.append(f"Contract winner: {self.current_trump_selector().name}")
+            lines.append("Next action: choose trump")
         return "\n".join(lines)
 
     def trick_summary(self) -> str:
@@ -471,6 +493,8 @@ class KaiserGame:
 
         if self.phase == "bidding":
             lines.append(f"Current bidder: {self.current_bidder().name}")
+        elif self.phase == "choosing_trump":
+            lines.append(f"Selecting trump: {self.current_trump_selector().name}")
         elif self.phase == "playing":
             lines.append(f"Current player: {self.current_player_to_play().name}")
 

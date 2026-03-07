@@ -20,14 +20,15 @@ const seatAssignmentGridEl = document.getElementById("seatAssignmentGrid");
 const startBotsBtn = document.getElementById("startBotsBtn");
 
 const bidValueEl = document.getElementById("bidValue");
-const bidTrumpEl = document.getElementById("bidTrump");
 const bidBtn = document.getElementById("bidBtn");
 const passBtn = document.getElementById("passBtn");
-const takeTrumpEl = document.getElementById("takeTrump");
 const takeBtn = document.getElementById("takeBtn");
+const contractTrumpEl = document.getElementById("contractTrump");
+const chooseTrumpBtn = document.getElementById("chooseTrumpBtn");
 const commandPanelEl = document.getElementById("commandPanel");
 const dealControlsEl = document.getElementById("dealControls");
 const biddingControlsEl = document.getElementById("biddingControls");
+const trumpControlsEl = document.getElementById("trumpControls");
 const playingHintEl = document.getElementById("playingHint");
 
 let ws = null;
@@ -70,6 +71,7 @@ function updateControlVisibility() {
   if (!roomReady) {
     dealControlsEl.style.display = "none";
     biddingControlsEl.style.display = "none";
+    trumpControlsEl.style.display = "none";
     playingHintEl.style.display = "none";
     commandPanelEl.style.display = "none";
     return;
@@ -77,10 +79,13 @@ function updateControlVisibility() {
 
   let showDealControls = false;
   let showBiddingControls = false;
+  let showTrumpControls = false;
   let showPlayingHint = false;
 
   if (currentPhase === "bidding") {
     showBiddingControls = true;
+  } else if (currentPhase === "choosing_trump") {
+    showTrumpControls = true;
   } else if (currentPhase === "playing") {
     showPlayingHint = false;
   } else {
@@ -90,8 +95,9 @@ function updateControlVisibility() {
 
   dealControlsEl.style.display = showDealControls ? "flex" : "none";
   biddingControlsEl.style.display = showBiddingControls ? "flex" : "none";
+  trumpControlsEl.style.display = showTrumpControls ? "flex" : "none";
   playingHintEl.style.display = showPlayingHint ? "flex" : "none";
-  commandPanelEl.style.display = (showDealControls || showBiddingControls || showPlayingHint) ? "block" : "none";
+  commandPanelEl.style.display = (showDealControls || showBiddingControls || showTrumpControls || showPlayingHint) ? "block" : "none";
 }
 
 function renderSetupPanel() {
@@ -213,6 +219,8 @@ function updateTurn(payload) {
 
   if (turnContext === "idle") {
     turnTextEl.textContent = `Dealer - ${currentName}`;
+  } else if (turnContext === "choosing_trump") {
+    turnTextEl.textContent = `${currentName} (select trump)`;
   } else {
     turnTextEl.textContent = currentName;
   }
@@ -234,10 +242,23 @@ function updateTurn(payload) {
     bidBtn.disabled = !isMine;
     passBtn.disabled = !isMine;
     takeBtn.disabled = !isMine;
+    if (chooseTrumpBtn) {
+      chooseTrumpBtn.disabled = true;
+    }
+  } else if (turnContext === "choosing_trump") {
+    bidBtn.disabled = true;
+    passBtn.disabled = true;
+    takeBtn.disabled = true;
+    if (chooseTrumpBtn) {
+      chooseTrumpBtn.disabled = !isMine;
+    }
   } else if (turnContext === "playing") {
     bidBtn.disabled = true;
     passBtn.disabled = true;
     takeBtn.disabled = true;
+    if (chooseTrumpBtn) {
+      chooseTrumpBtn.disabled = true;
+    }
   }
 
   updateHandCardButtonsEnabled();
@@ -370,7 +391,11 @@ function updateScoreboard(payload) {
   }
 
   const bidTeamLabel = bid.team_label || bid.team || "Unknown team";
-  setTextIfPresent(bidTextEl, `${bid.value} ${bid.trump} by ${bid.declarer} (${bidTeamLabel})`);
+  if (bid.trump === "hidden") {
+    setTextIfPresent(bidTextEl, `${bid.value} by ${bid.declarer} (${bidTeamLabel}) | awaiting trump`);
+  } else {
+    setTextIfPresent(bidTextEl, `${bid.value} ${bid.trump} by ${bid.declarer} (${bidTeamLabel})`);
+  }
 }
 
 function send(payload) {
@@ -516,8 +541,7 @@ commandButtons.forEach((btn) => {
 
 bidBtn.addEventListener("click", () => {
   const value = Number(bidValueEl.value);
-  const trump = bidTrumpEl.value;
-  send({ action: "bid", value, trump });
+  send({ action: "bid", value });
 });
 
 passBtn.addEventListener("click", () => {
@@ -525,8 +549,14 @@ passBtn.addEventListener("click", () => {
 });
 
 takeBtn.addEventListener("click", () => {
-  send({ action: "take", trump: takeTrumpEl.value });
+  send({ action: "take" });
 });
+
+if (chooseTrumpBtn) {
+  chooseTrumpBtn.addEventListener("click", () => {
+    send({ action: "choose_trump", trump: contractTrumpEl.value });
+  });
+}
 
 if (startBotsBtn) {
   startBotsBtn.addEventListener("click", () => {

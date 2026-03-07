@@ -73,6 +73,10 @@ export default function Page() {
   const [scoreSummary, setScoreSummary] = useState("-");
   const [sessionWinsSummary, setSessionWinsSummary] = useState("-");
   const [winningStatus, setWinningStatus] = useState("Target 52 (no no-trump bids yet)");
+  const [newGameStatus, setNewGameStatus] = useState("No new game prompt yet.");
+  const [startNewGameVisible, setStartNewGameVisible] = useState(false);
+  const [startNewGameReady, setStartNewGameReady] = useState(false);
+  const [startNewGameVoted, setStartNewGameVoted] = useState(false);
   const [thisHand, setThisHand] = useState("Team 1:0 tr (0 pts)\nTeam 2:0 tr (0 pts)");
   const [trickNumber, setTrickNumber] = useState(1);
   const [trickPlayHistory, setTrickPlayHistory] = useState<string[]>([]);
@@ -86,8 +90,7 @@ export default function Page() {
   const [setupInfo, setSetupInfo] = useState<SetupState | null>(null);
   const [setupAssignments, setSetupAssignments] = useState<(string | null)[]>([null, null, null, null]);
   const [bidValue, setBidValue] = useState(7);
-  const [bidTrump, setBidTrump] = useState("clubs");
-  const [takeTrump, setTakeTrump] = useState("clubs");
+  const [contractTrump, setContractTrump] = useState("clubs");
   const [helpOpen, setHelpOpen] = useState(false);
   const [joinRejection, setJoinRejection] = useState<string | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -95,7 +98,7 @@ export default function Page() {
 
   const isMyTurn = useMemo(() => {
     if (playerIndex === null || !ws) return false;
-    return turnContext === "bidding" || turnContext === "playing";
+    return turnContext === "bidding" || turnContext === "choosing_trump" || turnContext === "playing";
   }, [playerIndex, ws, turnContext]);
 
   const appendLog = (message: string) => {
@@ -190,6 +193,24 @@ export default function Page() {
     const winnerTeamLabel = winning.winner_team_label;
     const base = `Target ${target} (${noTrumpSeen ? "no-trump bid seen" : "no no-trump bids yet"})`;
     setWinningStatus(winnerTeamLabel ? `${base} | Winner: ${winnerTeamLabel} (bid out)` : `${base} | No winner yet`);
+
+    const newGame = scoreboard.new_game ?? {};
+    const votes = newGame.votes ?? 0;
+    const requiredVotes = newGame.required_votes ?? 0;
+    const available = newGame.available === true;
+    const votedPlayers: number[] = Array.isArray(newGame.voted_players) ? newGame.voted_players : [];
+    const iVoted = playerIndex !== null && votedPlayers.includes(playerIndex);
+    const timeoutRefreshedAt = typeof newGame.timeout_refreshed_at === "number"
+      ? new Date(newGame.timeout_refreshed_at * 1000).toLocaleTimeString()
+      : null;
+    setStartNewGameVisible(available);
+    setStartNewGameReady(newGame.ready_to_start === true);
+    setStartNewGameVoted(iVoted);
+    if (available) {
+      setNewGameStatus(`Start New Game: ${votes}/${requiredVotes} players ready${timeoutRefreshedAt ? ` | timeout refreshed ${timeoutRefreshedAt}` : ""}`);
+    } else {
+      setNewGameStatus("No new game prompt yet.");
+    }
 
     setThisHand(`${team0Label}:${scoreboard.hand?.tricks?.team0 ?? 0} tr (${scoreboard.hand?.points?.team0 ?? 0} pts)\n${team1Label}:${scoreboard.hand?.tricks?.team1 ?? 0} tr (${scoreboard.hand?.points?.team1 ?? 0} pts)`);
 
@@ -314,6 +335,16 @@ export default function Page() {
         case "hand":
           setCards((data.cards || "").trim() ? data.cards.trim().split(/\s+/) : []);
           break;
+        case "new_game_started":
+          setBidProgression([]);
+          setTrickPlayHistory([]);
+          setTrickNumber(1);
+          setStartNewGameVisible(false);
+          setStartNewGameReady(false);
+          setStartNewGameVoted(false);
+          trickCompletedRef.current = false;
+          setTrickCompleted(false);
+          break;
         default:
           if (data.message) appendLog(data.message);
           if (data.content) appendLog(data.content);
@@ -398,6 +429,7 @@ export default function Page() {
 
   const seatDisplay = ["Seat 1 (Team 1)", "Seat 2 (Team 2)", "Seat 3 (Team 1)", "Seat 4 (Team 2)"];
   const isMyBidTurn = turnContext === "bidding";
+  const isMyTrumpTurn = turnContext === "choosing_trump";
   const isMyPlayTurn = turnContext === "playing";
   const phaseLabel = currentPhase.replaceAll("_", " ");
 
@@ -488,6 +520,15 @@ export default function Page() {
                   Start Next Hand
                 </button>
               )}
+              {roomReady && startNewGameVisible && (
+                <button
+                  className="chip border-lime-700 bg-lime-700 text-lime-50 transition hover:bg-lime-800 disabled:opacity-60"
+                  onClick={() => send({ action: "start_new_game" })}
+                  disabled={startNewGameVoted && !startNewGameReady}
+                >
+                  {startNewGameVoted && !startNewGameReady ? "Waiting for Players" : "Start New Game"}
+                </button>
+              )}
             </div>
           </article>
           <article className="info-card animate-enter py-2.5 sm:col-span-2 xl:col-span-1">
@@ -495,6 +536,7 @@ export default function Page() {
             <p className="mt-1.5 text-base font-semibold">{scoreSummary}</p>
             <p className="mt-1 text-sm text-soft">Session Wins: {sessionWinsSummary}</p>
             <p className="mt-1 text-sm text-soft">{winningStatus}</p>
+            <p className="mt-1 text-sm text-soft">{newGameStatus}</p>
           </article>
         </section>
 
@@ -595,25 +637,31 @@ export default function Page() {
                   <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50/70 p-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
                       <p className="text-xs uppercase tracking-[0.2em] text-soft">Bid Value</p>
-                      <input type="number" min={7} max={12} value={bidValue} onChange={(e) => setBidValue(Number(e.target.value))} className="field" />
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs uppercase tracking-[0.2em] text-soft">Bid Trump</p>
-                      <select value={bidTrump} onChange={(e) => setBidTrump(e.target.value)} className="field">
-                        {suits.map((s) => <option key={s}>{s}</option>)}
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs uppercase tracking-[0.2em] text-soft">Take Trump</p>
-                      <select value={takeTrump} onChange={(e) => setTakeTrump(e.target.value)} className="field">
-                        {suits.map((s) => <option key={s}>{s}</option>)}
+                      <select value={String(bidValue)} onChange={(e) => setBidValue(Number(e.target.value))} className="field">
+                        {[7, 8, 9, 10, 11, 12].map((n) => (
+                          <option key={n} value={n}>{n}</option>
+                        ))}
                       </select>
                     </div>
 
                     <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-3">
-                      <button disabled={!isMyBidTurn} className="btn-primary" onClick={() => send({ action: "bid", value: bidValue, trump: bidTrump })}>Bid</button>
+                      <button disabled={!isMyBidTurn} className="btn-primary" onClick={() => send({ action: "bid", value: bidValue })}>Bid</button>
                       <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "pass" })}>Pass</button>
-                      <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "take", trump: takeTrump })}>Take</button>
+                      <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "take" })}>Take</button>
+                    </div>
+                  </div>
+                )}
+
+                {currentPhase === "choosing_trump" && (
+                  <div className="grid gap-3 rounded-xl border border-lime-200 bg-lime-50/70 p-3 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase tracking-[0.2em] text-soft">Select Trump</p>
+                      <select value={contractTrump} onChange={(e) => setContractTrump(e.target.value)} className="field">
+                        {suits.map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-3">
+                      <button disabled={!isMyTrumpTurn} className="btn-primary" onClick={() => send({ action: "choose_trump", trump: contractTrump })}>Confirm Trump</button>
                     </div>
                   </div>
                 )}

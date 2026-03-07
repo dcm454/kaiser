@@ -6,6 +6,7 @@ Manages game rooms and player connections.
 import asyncio
 import json
 import os
+import time
 from dataclasses import asdict
 from typing import Dict, List, Optional
 import websockets
@@ -53,9 +54,15 @@ class GameRoom:
         self.ready = False
         self.session_wins: List[int] = [0, 0]
         self.current_game_winner_recorded: bool = False
+        self.new_game_votes: set[int] = set()
+        self.last_timeout_refresh_at: float = time.time()
 
     def _recompute_ready(self) -> None:
         self.ready = (len(self.players) + len(self.bot_policies)) == 4
+
+    def mark_timeout_refresh(self) -> None:
+        # Any explicit user action updates this marker so clients can display that keepalive activity happened.
+        self.last_timeout_refresh_at = time.time()
 
     def is_bot_seat(self, player_index: int) -> bool:
         return player_index in self.bot_policies
@@ -149,6 +156,7 @@ class GameRoom:
         self.bot_policies = new_bot_policies
         self.bot_personas = new_bot_personas
         self.setup_complete = True
+        self.new_game_votes.clear()
 
         if host_ws is not None:
             for seat, ws in self.players.items():
@@ -187,11 +195,36 @@ class GameRoom:
         self.bot_personas = {}
         self.setup_complete = False
         self.current_game_winner_recorded = False
+        self.new_game_votes.clear()
+        self.mark_timeout_refresh()
         for seat in range(4):
             if seat in self.players:
                 name = self.player_names.get(seat, f"Player {seat + 1}")
                 self.game.players[seat].name = name
         self._recompute_ready()
+
+    def start_new_game(self) -> None:
+        """Start a fresh game with the current seats and setup kept intact."""
+        self.game = KaiserGame.new_default()
+        self.current_game_winner_recorded = False
+        self.new_game_votes.clear()
+        self.mark_timeout_refresh()
+
+        for seat in range(4):
+            if seat in self.players:
+                self.game.players[seat].name = self.player_names.get(seat, f"Player {seat + 1}")
+            elif seat in self.bot_personas:
+                self.game.players[seat].name = self.bot_personas[seat]["name"]
+
+        self._recompute_ready()
+
+    def required_new_game_votes(self) -> int:
+        return len(self.players)
+
+    def register_new_game_vote(self, player_index: int) -> None:
+        if player_index in self.players:
+            self.new_game_votes.add(player_index)
+            self.mark_timeout_refresh()
 
     def record_winner_if_needed(self) -> None:
         winner = self.game.winning_team_index
@@ -260,6 +293,8 @@ class GameRoom:
                 del self.player_names[idx]
                 if self.host_player_index == idx:
                     self.host_player_index = min(self.players.keys()) if self.players else None
+                if idx in self.new_game_votes:
+                    self.new_game_votes.remove(idx)
                 self._recompute_ready()
                 return idx
         return None
@@ -326,6 +361,13 @@ class GameServer:
                 "current_player_name": game.players[index].name,
                 "turn_context": "bidding",
             }
+        if game.phase == "choosing_trump":
+            index = game.trump_select_index
+            return {
+                "current_player_index": index,
+                "current_player_name": game.players[index].name,
+                "turn_context": "choosing_trump",
+            }
         if game.phase == "playing":
             index = game.play_turn_index
             return {
@@ -356,7 +398,7 @@ class GameServer:
         if bid_source is not None:
             declarer = game.players[bid_source.player_index].name
             team_index = bid_source.player_index % 2
-            bid_trump = bid_source.trump if game.phase != "bidding" else "hidden"
+            bid_trump = bid_source.trump if game.phase not in ("bidding", "choosing_trump") else "hidden"
             bid = {
                 "value": bid_source.value,
                 "trump": bid_trump,
@@ -364,6 +406,11 @@ class GameServer:
                 "team_index": team_index,
                 "team_label": team0_label if team_index == 0 else team1_label,
             }
+
+        winner_exists = game.winning_team_index in (0, 1)
+        new_game_votes = len(room.new_game_votes) if room is not None else 0
+        new_game_required_votes = room.required_new_game_votes() if room is not None else 0
+        new_game_ready = new_game_required_votes > 0 and new_game_votes >= new_game_required_votes
         return {
             "scoreboard": {
                 "phase": game.phase,
@@ -405,6 +452,14 @@ class GameServer:
                     "trick_number": game.trick_number,
                 },
                 "bid": bid,
+                "new_game": {
+                    "available": bool(room is not None and room.setup_complete and winner_exists),
+                    "votes": new_game_votes,
+                    "required_votes": new_game_required_votes,
+                    "ready_to_start": new_game_ready,
+                    "voted_players": sorted(list(room.new_game_votes)) if room is not None else [],
+                    "timeout_refreshed_at": room.last_timeout_refresh_at if room is not None else None,
+                },
             }
         }
 
@@ -425,6 +480,8 @@ class GameServer:
         while room.ready:
             if game.phase == "bidding":
                 seat = game.bid_turn_index
+            elif game.phase == "choosing_trump":
+                seat = game.trump_select_index
             elif game.phase == "playing":
                 seat = game.play_turn_index
             else:
@@ -439,13 +496,60 @@ class GameServer:
                 if game.phase == "bidding":
                     action, payload, reason = bot_policy.choose_bid_action(game, seat)
                     if action == "bid":
-                        result = game.place_bid(value=int(payload["value"]), trump=str(payload["trump"]))
+                        result = game.place_bid(value=int(payload["value"]))
                     elif action == "take":
-                        result = game.dealer_take_bid(trump=str(payload["trump"]))
+                        result = game.dealer_take_bid()
                     elif action == "pass":
                         result = game.pass_bid()
                     else:
                         result = game.pass_bid()
+
+                    await room.broadcast(
+                        {
+                            "type": "game_update",
+                            "message": result,
+                            "phase": game.phase,
+                            "bidding": game.bidding_summary(),
+                            "bot_action": {
+                                "bot_name": bot_name,
+                                "action": action,
+                                "reason": reason,
+                            },
+                            **self._turn_payload(game),
+                            **self._scoreboard_payload(game, room),
+                            **room.room_payload(),
+                        }
+                    )
+
+                    if game.phase == "choosing_trump":
+                        await room.broadcast(
+                            {
+                                "type": "phase_change",
+                                "phase": "choosing_trump",
+                                "message": f"Bidding complete. {game.current_trump_selector().name} selects trump.",
+                                "bidding": game.bidding_summary(),
+                                **self._turn_payload(game),
+                                **self._scoreboard_payload(game, room),
+                                **room.room_payload(),
+                            }
+                        )
+                    if game.phase == "playing":
+                        await room.broadcast(
+                            {
+                                "type": "phase_change",
+                                "phase": "playing",
+                                "message": "Bidding complete. Play phase started.",
+                                "trick": game.trick_summary(),
+                                **self._turn_payload(game),
+                                **self._scoreboard_payload(game, room),
+                                **room.room_payload(),
+                            }
+                        )
+                    if self.bot_turn_delay_seconds > 0:
+                        await asyncio.sleep(self.bot_turn_delay_seconds)
+                elif game.phase == "choosing_trump":
+                    action, payload, reason = bot_policy.choose_trump_action(game, seat)
+                    result = game.choose_contract_trump(str(payload["trump"]))
 
                     await room.broadcast(
                         {
@@ -469,7 +573,7 @@ class GameServer:
                             {
                                 "type": "phase_change",
                                 "phase": "playing",
-                                "message": "Bidding complete. Play phase started.",
+                                "message": "Trump selected. Play phase started.",
                                 "trick": game.trick_summary(),
                                 **self._turn_payload(game),
                                 **self._scoreboard_payload(game, room),
@@ -635,6 +739,14 @@ class GameServer:
                 active_name = game.players[active_index].name
                 raise ValueError(f"Not your turn to bid. Active bidder: {active_name}")
 
+        def require_trump_selector() -> None:
+            if game.phase != "choosing_trump":
+                raise ValueError("Trump selection is not active")
+            active_index = game.trump_select_index
+            if player_index != active_index:
+                active_name = game.players[active_index].name
+                raise ValueError(f"Not your turn to select trump. Active player: {active_name}")
+
         def require_active_player() -> None:
             if game.phase != "playing":
                 raise ValueError("Play phase is not active")
@@ -644,6 +756,7 @@ class GameServer:
                 raise ValueError(f"Not your turn to play. Active player: {active_name}")
         
         try:
+            room.mark_timeout_refresh()
             if action == "setup_game":
                 if player_index != room.host_player_index:
                     raise ValueError("Only the first connected player can run game setup")
@@ -728,6 +841,40 @@ class GameServer:
                 await self._send_hands_to_humans(room)
                 run_bots_after = True
 
+            elif action == "start_new_game":
+                if game.winning_team_index not in (0, 1):
+                    raise ValueError("New game can only be started after a winner is determined")
+
+                room.register_new_game_vote(player_index)
+                votes = len(room.new_game_votes)
+                required_votes = room.required_new_game_votes()
+                await room.broadcast({
+                    "type": "new_game_vote",
+                    "message": f"{game.players[player_index].name} is ready for a new game ({votes}/{required_votes}).",
+                    "new_game": {
+                        "votes": votes,
+                        "required_votes": required_votes,
+                        "timeout_refreshed_at": room.last_timeout_refresh_at,
+                    },
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game, room),
+                    **room.room_payload(),
+                })
+
+                if required_votes > 0 and votes >= required_votes:
+                    room.start_new_game()
+                    game = room.game
+                    await room.broadcast({
+                        "type": "new_game_started",
+                        "message": "All players confirmed. New game is ready. Dealer can deal.",
+                        "state": game.state_summary(),
+                        "phase": game.phase,
+                        "timeout_refreshed_at": room.last_timeout_refresh_at,
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
+
             elif action == "restart_game":
                 if player_index != room.host_player_index:
                     raise ValueError("Only the host can restart the game")
@@ -762,8 +909,7 @@ class GameServer:
             elif action == "bid":
                 require_active_bidder()
                 value = data.get("value")
-                trump = data.get("trump")
-                result = game.place_bid(value=value, trump=trump)
+                result = game.place_bid(value=value)
                 await room.broadcast({
                     "type": "game_update",
                     "message": result,
@@ -773,6 +919,16 @@ class GameServer:
                     **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
+                if game.phase == "choosing_trump":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "choosing_trump",
+                        "message": f"Bidding complete. {game.current_trump_selector().name} selects trump.",
+                        "bidding": game.bidding_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
                 if game.phase == "playing":
                     await room.broadcast({
                         "type": "phase_change",
@@ -797,6 +953,16 @@ class GameServer:
                     **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
+                if game.phase == "choosing_trump":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "choosing_trump",
+                        "message": f"Bidding complete. {game.current_trump_selector().name} selects trump.",
+                        "bidding": game.bidding_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
                 if game.phase == "playing":
                     await room.broadcast({
                         "type": "phase_change",
@@ -813,8 +979,42 @@ class GameServer:
                 require_active_bidder()
                 if player_index != game.dealer_index:
                     raise ValueError("Only the dealer can take the highest bid")
+                result = game.dealer_take_bid()
+                await room.broadcast({
+                    "type": "game_update",
+                    "message": result,
+                    "phase": game.phase,
+                    "bidding": game.bidding_summary(),
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game, room),
+                    **room.room_payload(),
+                })
+                if game.phase == "choosing_trump":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "choosing_trump",
+                        "message": f"Bidding complete. {game.current_trump_selector().name} selects trump.",
+                        "bidding": game.bidding_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
+                if game.phase == "playing":
+                    await room.broadcast({
+                        "type": "phase_change",
+                        "phase": "playing",
+                        "message": "Bidding complete. Play phase started.",
+                        "trick": game.trick_summary(),
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
+                run_bots_after = True
+
+            elif action == "choose_trump":
+                require_trump_selector()
                 trump = data.get("trump")
-                result = game.dealer_take_bid(trump=trump)
+                result = game.choose_contract_trump(trump=trump)
                 await room.broadcast({
                     "type": "game_update",
                     "message": result,
@@ -828,7 +1028,7 @@ class GameServer:
                     await room.broadcast({
                         "type": "phase_change",
                         "phase": "playing",
-                        "message": "Bidding complete. Play phase started.",
+                        "message": "Trump selected. Play phase started.",
                         "trick": game.trick_summary(),
                         **self._turn_payload(game),
                         **self._scoreboard_payload(game, room),
@@ -841,7 +1041,7 @@ class GameServer:
                     "type": "trick",
                     "content": game.trick_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 }))
             
@@ -856,7 +1056,7 @@ class GameServer:
                     "phase": game.phase,
                     "trick": game.trick_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
                 # Update all players' hands
@@ -867,7 +1067,7 @@ class GameServer:
                         "message": "Hand complete.",
                         "trick": game.trick_summary(),
                         "state": game.state_summary(),
-                        **self._scoreboard_payload(game),
+                        **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
                 run_bots_after = True
@@ -879,7 +1079,7 @@ class GameServer:
                     "message": f"Dealer rotated to {new_dealer.name}.",
                     "state": game.state_summary(),
                     **self._turn_payload(game),
-                    **self._scoreboard_payload(game),
+                    **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
             

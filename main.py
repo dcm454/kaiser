@@ -9,9 +9,10 @@ Commands:
     deal                Build + shuffle deck and deal 8 cards to each player
     hands               Show each player's hand
     bidding             Show bidding history and next bidder
-    bid <n> <trump>     Bid for current bidder (trump: clubs|diamonds|hearts|spades|no-trump)
+    bid <n>             Bid value for current bidder (7-12)
     pass                Pass for current bidder
-    take <trump>        Dealer takes current highest number with chosen trump
+    take                Dealer takes current highest number
+    trump <suit>        Contract winner selects trump (clubs|diamonds|hearts|spades|no-trump)
     trick               Show trick/contract/team points state
     play <card>         Play card for current player (example: 10h, As, 7c)
     tricks              Alias for trick
@@ -22,15 +23,15 @@ Commands:
 RULES_TEXT = """
 Kaiser short rules:
     - Deal starts bidding (left of dealer first).
-    - Bid format: bid <7-12> <clubs|diamonds|hearts|spades|no-trump>.
+    - Bid format: bid <7-12>.
     - Single bidding cycle: each player acts once; dealer is last.
     - If no one bids before dealer, dealer must bid.
-    - Dealer may take current highest number with chosen trump: take <trump>.
+    - Dealer may take current highest number: take.
     - Dealer may also keep high bid unchanged and close bidding by passing (only if a high bid exists).
     - No-trump contracts: contracting team scoring is doubled (made bid: 2x points won; failed bid: 2x bid penalty).
     - Winning team must bid out (contracting team must make its bid in the winning hand).
     - Winning score target is 52 if no no-trump bid has occurred; target becomes 64 if any no-trump bid occurs.
-    - Dealer action closes bidding and starts play.
+    - Dealer action closes bidding, then bid winner selects trump.
     - Play in turn. You must follow lead suit if you can.
 """.strip()
 
@@ -70,42 +71,52 @@ def run_cli() -> None:
         elif cmd == "bidding":
             print(game.bidding_summary())
         elif cmd == "bid":
-            if len(parts) != 3:
-                print("Usage: bid <n> <trump>")
+            if len(parts) != 2:
+                print("Usage: bid <n>")
                 continue
             try:
                 value = int(parts[1])
             except ValueError:
                 print("Bid value must be an integer")
                 continue
-            trump = parts[2].lower()
             try:
-                result = game.place_bid(value=value, trump=trump)
+                result = game.place_bid(value=value)
                 print(result)
-                if game.phase == "playing":
-                    print("Bidding complete. Play phase started.")
-                    print(game.trick_summary())
+                if game.phase == "choosing_trump":
+                    print(f"Bidding complete. {game.current_trump_selector().name} selects trump.")
+                    print(game.bidding_summary())
             except ValueError as exc:
                 print(str(exc))
         elif cmd == "pass":
             try:
                 result = game.pass_bid()
                 print(result)
-                if game.phase == "playing":
-                    print("Bidding complete. Play phase started.")
-                    print(game.trick_summary())
+                if game.phase == "choosing_trump":
+                    print(f"Bidding complete. {game.current_trump_selector().name} selects trump.")
+                    print(game.bidding_summary())
             except ValueError as exc:
                 print(str(exc))
         elif cmd == "take":
-            if len(parts) != 2:
-                print("Usage: take <trump>")
+            if len(parts) != 1:
+                print("Usage: take")
                 continue
             try:
-                trump = parts[1].lower()
-                result = game.dealer_take_bid(trump=trump)
+                result = game.dealer_take_bid()
+                print(result)
+                if game.phase == "choosing_trump":
+                    print(f"Bidding complete. {game.current_trump_selector().name} selects trump.")
+                    print(game.bidding_summary())
+            except ValueError as exc:
+                print(str(exc))
+        elif cmd == "trump":
+            if len(parts) != 2:
+                print("Usage: trump <clubs|diamonds|hearts|spades|no-trump>")
+                continue
+            try:
+                result = game.choose_contract_trump(parts[1].lower())
                 print(result)
                 if game.phase == "playing":
-                    print("Bidding complete. Play phase started.")
+                    print("Trump selected. Play phase started.")
                     print(game.trick_summary())
             except ValueError as exc:
                 print(str(exc))

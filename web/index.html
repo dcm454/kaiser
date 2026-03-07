@@ -214,24 +214,27 @@
           <button data-action="rotate">rotate</button>
         </div>
         <div class="row" id="biddingControls" style="margin-top:8px;">
-          <input id="bidValue" type="number" min="7" max="12" value="7" style="width:80px;" />
-          <select id="bidTrump">
-            <option>clubs</option>
-            <option>diamonds</option>
-            <option>hearts</option>
-            <option>spades</option>
-            <option>no-trump</option>
+          <select id="bidValue" style="width:90px;">
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
           </select>
           <button id="bidBtn">bid</button>
           <button id="passBtn">pass</button>
-          <select id="takeTrump">
+          <button id="takeBtn">take</button>
+        </div>
+        <div class="row" id="trumpControls" style="margin-top:8px; display:none;">
+          <select id="contractTrump">
             <option>clubs</option>
             <option>diamonds</option>
             <option>hearts</option>
             <option>spades</option>
             <option>no-trump</option>
           </select>
-          <button id="takeBtn">take</button>
+          <button id="chooseTrumpBtn">choose trump</button>
         </div>
         <div class="row subtle" id="playingHint" style="margin-top:8px;">Click a card in <b>Your hand</b> to play it.</div>
       </div>
