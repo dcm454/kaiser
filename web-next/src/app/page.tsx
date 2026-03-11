@@ -15,6 +15,7 @@ type RoomPayload = {
 };
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "wss://kaiser-server-997088621734.us-central1.run.app/";
+const GAME_TIMEOUT_MS = 60 * 60 * 1000;
 
 function extractBidProgressionLines(biddingSummary: string): string[] {
   return biddingSummary
@@ -57,6 +58,48 @@ function EightCardHandIcon() {
   );
 }
 
+function GuideContent() {
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+        <h3 className="font-semibold">Rules Summary</h3>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
+          <li>Kaiser is a 4-player partnership trick-taking game: Seat 1 and 3 vs Seat 2 and 4.</li>
+          <li>Each hand has staged bidding, trump selection by the winning bidder, then trick play.</li>
+          <li>In bidding, players bid values only, pass, and the dealer can take the current value.</li>
+          <li>Once the contract value is established, the winner chooses trump.</li>
+          <li>In play, follow suit when possible. Highest card of lead suit wins unless trump is played.</li>
+          <li>The 5H adds 5 points. The 3S subtracts 3 points.</li>
+          <li>The winning target is 52, or 64 after any no-trump contract appears.</li>
+          <li>Each game must be completed within 60 minutes.</li>
+        </ul>
+      </article>
+
+      <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+        <h3 className="font-semibold">Guide</h3>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
+          <li>Enter a game name and your name, then connect.</li>
+          <li>The first person in becomes host and assigns seats or AI players.</li>
+          <li>Before setup is complete, the screen stays focused on the setup table.</li>
+          <li>After setup, the game board opens with round status, controls, hand, and log.</li>
+          <li>Starting a new game resets the 60-minute timer.</li>
+          <li>Use Playing Guide anytime to reopen these notes.</li>
+          <li>On a phone, the layout stacks in play order so the hand stays easy to reach.</li>
+        </ul>
+      </article>
+
+      <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 md:col-span-2">
+        <h3 className="font-semibold">History and AI</h3>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
+          <li>The AI players use predefined strategies with cautious, balanced, aggressive, and chaotic profiles.</li>
+          <li>Live game logs now include bid strength, hand snapshots, and play reasons for bot turns.</li>
+          <li>The interface keeps setup focused first, then expands into the full table once the room is ready.</li>
+        </ul>
+      </article>
+    </div>
+  );
+}
+
 export default function Page() {
   const [gameName, setGameName] = useState("mygame");
   const [playerName, setPlayerName] = useState("");
@@ -82,6 +125,7 @@ export default function Page() {
   const [trickPlayHistory, setTrickPlayHistory] = useState<string[]>([]);
   const [trickCompleted, setTrickCompleted] = useState(false);
   const [bidText, setBidText] = useState("No bid yet");
+  const [currentHighestBidValue, setCurrentHighestBidValue] = useState(0);
   const [bidProgression, setBidProgression] = useState<string[]>([]);
   const [winningBidPatterns, setWinningBidPatterns] = useState<string[]>([]);
   const [cards, setCards] = useState<string[]>([]);
@@ -89,11 +133,13 @@ export default function Page() {
   const [virtualPlayers, setVirtualPlayers] = useState<SetupOption[]>([]);
   const [setupInfo, setSetupInfo] = useState<SetupState | null>(null);
   const [setupAssignments, setSetupAssignments] = useState<(string | null)[]>([null, null, null, null]);
-  const [bidValue, setBidValue] = useState(7);
   const [contractTrump, setContractTrump] = useState("clubs");
   const [helpOpen, setHelpOpen] = useState(false);
   const [joinRejection, setJoinRejection] = useState<string | null>(null);
   const [handActionError, setHandActionError] = useState<string | null>(null);
+  const [gameTimerEndsAt, setGameTimerEndsAt] = useState<number | null>(null);
+  const [timerNow, setTimerNow] = useState(Date.now());
+  const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
 
@@ -235,8 +281,10 @@ export default function Page() {
     const bid = scoreboard.bid;
     if (!bid) {
       setBidText("No bid yet");
+      setCurrentHighestBidValue(0);
       setWinningBidPatterns([]);
     } else {
+      setCurrentHighestBidValue(typeof bid.value === "number" ? bid.value : 0);
       if (bid.trump === "hidden") {
         setBidText(`${bid.value} by ${bid.declarer}`);
       } else {
@@ -276,12 +324,14 @@ export default function Page() {
       ws.close();
       setWs(null);
       setConnected(false);
+      setGameTimerEndsAt(null);
       return;
     }
 
     const socket = new WebSocket(WS_URL);
     socket.onopen = () => {
       setConnected(true);
+      resetGameTimer();
       setJoinRejection(null);
       appendLog(`Connected to ${WS_URL}`);
       const name = playerName.trim() || `Player-${Math.floor(Math.random() * 1000)}`;
@@ -354,6 +404,7 @@ export default function Page() {
           setCards((data.cards || "").trim() ? data.cards.trim().split(/\s+/) : []);
           break;
         case "new_game_started":
+          resetGameTimer();
           setBidProgression([]);
           setTrickPlayHistory([]);
           setTrickNumber(1);
@@ -426,6 +477,7 @@ export default function Page() {
 
     socket.onclose = () => {
       setConnected(false);
+      setGameTimerEndsAt(null);
       setWs(null);
       appendLog("Disconnected.");
     };
@@ -472,6 +524,40 @@ export default function Page() {
   const isMyTrumpTurn = turnContext === "choosing_trump";
   const isMyPlayTurn = turnContext === "playing";
   const phaseLabel = currentPhase.replaceAll("_", " ");
+  const showLandingGuide = !connected;
+  const showSetupStage = connected && !roomReady;
+  const showActiveGame = connected && roomReady;
+  const compactPlayingHeader = showActiveGame && currentPhase === "playing";
+  const headerActionText = compactPlayingHeader ? `${phaseLabel}: ${turnName}` : null;
+  const showDebugDrawerControl = connected && isHost;
+  const remainingTimerMs = gameTimerEndsAt === null ? GAME_TIMEOUT_MS : Math.max(0, gameTimerEndsAt - timerNow);
+  const timerMinutes = Math.floor(remainingTimerMs / 60000);
+  const timerSeconds = Math.floor((remainingTimerMs % 60000) / 1000);
+  const gameTimerText = `${String(timerMinutes).padStart(2, "0")}:${String(timerSeconds).padStart(2, "0")}`;
+
+  const resetGameTimer = () => {
+    const now = Date.now();
+    setTimerNow(now);
+    setGameTimerEndsAt(now + GAME_TIMEOUT_MS);
+  };
+
+  useEffect(() => {
+    if (!connected || gameTimerEndsAt === null) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setTimerNow(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [connected, gameTimerEndsAt]);
+
+  useEffect(() => {
+    if (!showDebugDrawerControl) {
+      setDebugDrawerOpen(false);
+    }
+  }, [showDebugDrawerControl]);
 
   const phaseChipClasses = () => {
     if (currentPhase === "playing") return "chip border-emerald-300 bg-emerald-100 text-emerald-900";
@@ -494,27 +580,47 @@ export default function Page() {
         <section className="panel animate-enter">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-soft">Realtime Table</p>
-              <h1 className="mt-1 flex items-center gap-3 text-2xl font-bold tracking-tight sm:text-3xl">
+              {!compactPlayingHeader && <p className="text-xs uppercase tracking-[0.24em] text-soft">Realtime Table</p>}
+              <h1 className={`${compactPlayingHeader ? "" : "mt-1 "}flex items-center gap-3 text-2xl font-bold tracking-tight sm:text-3xl`}>
                 <EightCardHandIcon />
                 <span>Play Kaiser</span>
               </h1>
-              <p className="mt-1 text-sm text-soft">Fast multiplayer rounds with live bids, play-by-play trick state, and host setup controls.</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                className="chip border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200"
-                onClick={() => setHelpOpen(true)}
-                aria-label="Open game help"
-              >
-                Playing Guide
-              </button>
-              <span className={connected ? "chip border-emerald-300 bg-emerald-100 text-emerald-900" : "chip border-amber-300 bg-amber-100 text-amber-900"}>
-                {connected ? "Connected" : "Disconnected"}
-              </span>
-              {connected && (
-                <button className="chip border-rose-300 bg-rose-100 text-rose-900 transition hover:bg-rose-200" onClick={connect}>Disconnect</button>
+              {compactPlayingHeader ? (
+                <p className="mt-1 text-sm font-medium text-soft">{headerActionText}</p>
+              ) : (
+                <p className="mt-1 text-sm text-soft">Fast multiplayer rounds with live bids, play-by-play trick state, and host setup controls.</p>
               )}
+            </div>
+            <div className="flex flex-col items-end gap-2 self-start">
+              <span className={`chip min-h-9 min-w-24 justify-center ${remainingTimerMs > 0 ? "border-sky-300 bg-sky-100 text-sky-900" : "border-amber-300 bg-amber-100 text-amber-900"}`}>
+                {remainingTimerMs > 0 ? `Timer ${gameTimerText}` : "Time Expired"}
+              </span>
+              <div className={`${compactPlayingHeader ? "grid grid-cols-2 gap-2" : "flex flex-wrap items-center justify-end gap-2"}`}>
+                {showDebugDrawerControl && (
+                  <button
+                    className={`chip min-h-9 justify-center transition ${debugDrawerOpen ? "border-sky-400 bg-sky-100 text-sky-900 hover:bg-sky-200" : "border-emerald-300 bg-emerald-100 text-emerald-900 hover:bg-emerald-200"}`}
+                    onClick={() => setDebugDrawerOpen((open) => !open)}
+                  >
+                    {debugDrawerOpen ? "Hide Debug" : "Debug Log"}
+                  </button>
+                )}
+                {connected && isHost && roomReady && (
+                  <button className="chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
+                )}
+                <button
+                  className="chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200"
+                  onClick={() => setHelpOpen(true)}
+                  aria-label="Open game help"
+                >
+                  Playing Guide
+                </button>
+                <span className={connected ? "chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900" : "chip min-h-9 justify-center border-amber-300 bg-amber-100 text-amber-900"}>
+                  {connected ? "Connected" : "Disconnected"}
+                </span>
+                {connected && (
+                  <button className="chip min-h-9 justify-center border-rose-300 bg-rose-100 text-rose-900 transition hover:bg-rose-200" onClick={connect}>Disconnect</button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -533,45 +639,22 @@ export default function Page() {
           )}
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[0.6fr,1.2fr,2fr]">
-          <article className="info-card animate-enter py-2.5">
-            <p className="text-xs uppercase tracking-[0.2em] text-soft">Turn</p>
-            <p className="mt-1.5 text-base font-semibold">{turnName}</p>
-          </article>
-          <article className="info-card animate-enter py-2.5">
-            <p className="text-xs uppercase tracking-[0.2em] text-soft">Phase</p>
-            <p className="mt-1.5"><span className={phaseChipClasses()}>{phaseLabel}</span></p>
-            <div className="mt-2.5 flex flex-wrap gap-2">
-              {isHost && roomReady && (
-                <button className="chip border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200" onClick={() => send({ action: "restart_game" })}>Reset Game</button>
-              )}
-              {roomReady && currentPhase === "hand_over" && (
-                <button
-                  className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800"
-                  onClick={() => {
-                    // Reflect next-hand transition immediately in the trick panel.
-                    setTrickPlayHistory([]);
-                    setTrickNumber((prev) => prev + 1);
-                    trickCompletedRef.current = false;
-                    setTrickCompleted(false);
-                    send({ action: "next_hand" });
-                  }}
-                >
-                  Start Next Hand
-                </button>
-              )}
-              {roomReady && startNewGameVisible && (
-                <button
-                  className="chip border-lime-700 bg-lime-700 text-lime-50 transition hover:bg-lime-800 disabled:opacity-60"
-                  onClick={() => send({ action: "start_new_game" })}
-                  disabled={startNewGameVoted && !startNewGameReady}
-                >
-                  {startNewGameVoted && !startNewGameReady ? "Waiting for Players" : "Start New Game"}
-                </button>
-              )}
+        {showLandingGuide && (
+          <section className="panel animate-enter space-y-4">
+            <div className="max-w-2xl">
+              <p className="text-xs uppercase tracking-[0.2em] text-soft">Before You Join</p>
+              <h2 className="mt-1 text-xl font-semibold sm:text-2xl">Quick Guide to Starting a Table</h2>
+              <p className="mt-2 text-sm text-soft">
+                The landing screen keeps things simple on phones: connect from the header, then move directly into seat setup.
+              </p>
             </div>
-          </article>
-          <article className="info-card animate-enter py-2.5 sm:col-span-2 xl:col-span-1">
+            <GuideContent />
+          </section>
+        )}
+
+        {showActiveGame && (
+        <section className="grid gap-3">
+          <article className="info-card animate-enter py-2.5">
             <p className="text-xs uppercase tracking-[0.2em] text-soft">Live Score</p>
             <p className="mt-1.5 text-base font-semibold">{scoreSummary}</p>
             <p className="mt-1 text-sm text-soft">Session Wins: {sessionWinsSummary}</p>
@@ -579,9 +662,10 @@ export default function Page() {
             <p className="mt-1 text-sm text-soft">{newGameStatus}</p>
           </article>
         </section>
+        )}
 
-        {!roomReady && (
-          <section className="panel animate-enter space-y-4">
+        {showSetupStage && (
+          <section className="panel animate-enter mx-auto w-full max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Game Setup</h2>
               <span className="text-sm text-soft">
@@ -589,7 +673,7 @@ export default function Page() {
               </span>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               {seatDisplay.map((label, seat) => (
                 <article key={label} className="info-card space-y-2">
                   <p className="text-sm font-semibold">{label}</p>
@@ -618,7 +702,7 @@ export default function Page() {
               ))}
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               {virtualPlayers.map((vp) => (
                 <button
                   key={vp.id ?? vp.name}
@@ -639,12 +723,12 @@ export default function Page() {
           </section>
         )}
 
-        <section className="grid gap-4 xl:grid-cols-[1.55fr,1fr]">
-          <div className="space-y-4">
+        {showActiveGame && (
+        <section className="space-y-4">
             <section className="panel animate-enter">
               <h2 className="mb-3 text-lg font-semibold">Round Snapshot</h2>
-              <div className="grid gap-3 md:grid-cols-3">
-                <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Dealer: {dealerName}{"\n"}{thisHand}</pre>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Turn: {turnName}{"\n"}Phase: {phaseLabel}{"\n"}Dealer: {dealerName}{"\n"}{thisHand}</pre>
                 <pre className="mono-block whitespace-pre-wrap"><strong>This Trick</strong>{"\n"}{thisTrickText}</pre>
                 <div className="mono-block whitespace-pre-wrap">
                   <strong>Bid</strong>
@@ -674,18 +758,34 @@ export default function Page() {
                 </div>
 
                 {currentPhase === "bidding" && (
-                  <div className="grid gap-3 rounded-xl border border-emerald-100 bg-emerald-50/70 p-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="space-y-3 rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
                     <div className="space-y-2">
                       <p className="text-xs uppercase tracking-[0.2em] text-soft">Bid Value</p>
-                      <select value={String(bidValue)} onChange={(e) => setBidValue(Number(e.target.value))} className="field">
+                      <div className="flex flex-wrap gap-2">
                         {[7, 8, 9, 10, 11, 12].map((n) => (
-                          <option key={n} value={n}>{n}</option>
+                          (() => {
+                            const unavailable = n <= currentHighestBidValue;
+                            return (
+                          <button
+                            key={n}
+                            type="button"
+                            disabled={!isMyBidTurn || unavailable}
+                            className={`min-w-10 rounded-lg border px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                              unavailable
+                                ? "border-emerald-100 bg-emerald-50 text-emerald-300 opacity-55"
+                                : "border-emerald-200 bg-white text-emerald-900 hover:border-emerald-400 hover:bg-emerald-100 disabled:opacity-50"
+                            }`}
+                            onClick={() => send({ action: "bid", value: n })}
+                          >
+                            {n}
+                          </button>
+                            );
+                          })()
                         ))}
-                      </select>
+                      </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-3">
-                      <button disabled={!isMyBidTurn} className="btn-primary" onClick={() => send({ action: "bid", value: bidValue })}>Bid</button>
+                    <div className="flex flex-wrap gap-2">
                       <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "pass" })}>Pass</button>
                       <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "take" })}>Take</button>
                     </div>
@@ -707,13 +807,41 @@ export default function Page() {
                 )}
 
                 <div>
-                  <h3 className="mb-2 text-base font-semibold">Your Hand</h3>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-base font-semibold">Your Hand</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {roomReady && currentPhase === "hand_over" && (
+                        <button
+                          className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800"
+                          onClick={() => {
+                            // Reflect next-hand transition immediately in the trick panel.
+                            setTrickPlayHistory([]);
+                            setTrickNumber((prev) => prev + 1);
+                            trickCompletedRef.current = false;
+                            setTrickCompleted(false);
+                            send({ action: "next_hand" });
+                          }}
+                        >
+                          Start Next Hand
+                        </button>
+                      )}
+                      {roomReady && startNewGameVisible && (
+                        <button
+                          className="chip border-lime-700 bg-lime-700 text-lime-50 transition hover:bg-lime-800 disabled:opacity-60"
+                          onClick={() => send({ action: "start_new_game" })}
+                          disabled={startNewGameVoted && !startNewGameReady}
+                        >
+                          {startNewGameVoted && !startNewGameReady ? "Waiting for Players" : "Start New Game"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   {handActionError && (
                     <div className="mb-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
                       {handActionError}
                     </div>
                   )}
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                  <div className="grid grid-cols-4 gap-2 lg:grid-cols-6">
                     {cards.map((card) => (
                       <button
                         key={card}
@@ -735,14 +863,36 @@ export default function Page() {
                 </div>
               </section>
             )}
-          </div>
-
-          <section className="panel animate-enter">
-            <h2 className="mb-3 text-lg font-semibold">Game Log</h2>
-            <pre className="mono-block max-h-[24rem] overflow-auto whitespace-pre-wrap">{log.join("\n")}</pre>
-          </section>
         </section>
+        )}
       </div>
+
+      {showDebugDrawerControl && (
+        <>
+          {debugDrawerOpen && (
+            <button
+              type="button"
+              aria-label="Close debug drawer"
+              className="fixed inset-0 z-40 bg-emerald-950/25"
+              onClick={() => setDebugDrawerOpen(false)}
+            />
+          )}
+          <aside
+            className={`fixed inset-y-0 right-0 z-50 w-full max-w-md transform border-l border-emerald-200 bg-white/96 p-4 shadow-2xl backdrop-blur-xl transition duration-300 ease-out ${debugDrawerOpen ? "translate-x-0" : "translate-x-full"}`}
+            aria-hidden={!debugDrawerOpen}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-soft">Host Only</p>
+                <h2 className="text-lg font-semibold">Debug Log</h2>
+              </div>
+              <button className="btn-secondary" onClick={() => setDebugDrawerOpen(false)}>Close</button>
+            </div>
+            <p className="mt-2 text-sm text-soft">Use this hidden drawer to monitor bot decisions and gameplay events without exposing the log during play.</p>
+            <pre className="mono-block mt-4 max-h-[calc(100vh-9rem)] overflow-auto whitespace-pre-wrap">{log.join("\n")}</pre>
+          </aside>
+        </>
+      )}
 
       {helpOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/45 p-4" onClick={() => setHelpOpen(false)}>
@@ -761,45 +911,8 @@ export default function Page() {
               <button className="btn-secondary" onClick={() => setHelpOpen(false)}>Close</button>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <h3 className="font-semibold">Rules Summary</h3>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
-                  <li>Kaiser is a 4-player partnership trick-taking game (Seat 1 and 3 vs Seat 2 and 4).</li>
-                  <li>Each hand has bidding, then trick play.</li>
-                  <li>In bidding, players can bid, pass, and the dealer can take with a trump suit/no-trump.</li>
-                  <li>The highest bidder becomes declarer and sets the contract.</li>
-                  <li>In play, follow suit when possible. Highest card of lead suit wins unless trump is played.</li>
-                  <li>There are two special cards: 5 of hearts and 3 of spades. The 5H earns additional 5 points. 3S deducts 3 points.</li>
-                  <li>Hand and game scoring is shown live in the scoreboard panel.</li>
-                </ul>
-              </article>
-
-              <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <h3 className="font-semibold">Guide</h3>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
-                  <li>Top panel: enter a game name of your choice and your name, then Connect.</li>
-                  <li>Share the name with any other people that want to play</li>
-                  <li>The first person to connect becomes the host and assigns seats/teams.</li>
-                  <li>Rules and Guide button: opens this help popup anytime.</li>
-                  <li>Turn and Phase cards: show who acts now and current game stage.</li>
-                  <li>Round Snapshot: tracks this hand, this trick, and active bid.</li>
-                  <li>Action panel: bidding and dealer controls only appear when relevant.</li>
-                  <li>Your Hand: click a card to play when it is your turn.</li>
-                  <li>Game Log: newest event is at the top.</li>
-                </ul>
-              </article>
-
-              <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
-                <h3 className="font-semibold">History and AI</h3>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
-                  <li>The AI players use predefined strategies to make decisions during the game.</li>
-                  <li>They are based on different profiles such as cautious, balanced, aggressive, and chaotic.</li>
-                  <li>They are inspired by 4 siblings (now deceased) who were avid Kaiser players.</li>
-                  <li>They grew up on a farm not far from Smutz Saskatchewan, Canada.</li>
-                  <li>They played Kaiser together over many years, developing unique strategies.</li>
-                 </ul>
-              </article>
+            <div className="mt-4">
+              <GuideContent />
             </div>
           </section>
         </div>
