@@ -100,4 +100,5 @@ h3 {
 
 pre {
   margin: 0;
+  overflow-wrap: anywhere;
 }

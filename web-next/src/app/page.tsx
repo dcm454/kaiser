@@ -140,6 +140,7 @@ export default function Page() {
   const [gameTimerEndsAt, setGameTimerEndsAt] = useState<number | null>(null);
   const [timerNow, setTimerNow] = useState(Date.now());
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
 
@@ -558,6 +559,10 @@ export default function Page() {
       setDebugDrawerOpen(false);
     }
   }, [showDebugDrawerControl]);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentPhase, connected, roomReady]);
 
   const phaseChipClasses = () => {
     if (currentPhase === "playing") return "chip border-emerald-300 bg-emerald-100 text-emerald-900";
