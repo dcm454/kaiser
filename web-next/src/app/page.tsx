@@ -125,10 +125,12 @@ export default function Page() {
   const [trickPlayHistory, setTrickPlayHistory] = useState<string[]>([]);
   const [trickCompleted, setTrickCompleted] = useState(false);
   const [bidText, setBidText] = useState("No bid yet");
+  const [winningBidSummary, setWinningBidSummary] = useState("No bid yet");
   const [currentHighestBidValue, setCurrentHighestBidValue] = useState(0);
   const [bidProgression, setBidProgression] = useState<string[]>([]);
   const [winningBidPatterns, setWinningBidPatterns] = useState<string[]>([]);
   const [cards, setCards] = useState<string[]>([]);
+  const [handRevision, setHandRevision] = useState(0);
   const [log, setLog] = useState<string[]>([]);
   const [virtualPlayers, setVirtualPlayers] = useState<SetupOption[]>([]);
   const [setupInfo, setSetupInfo] = useState<SetupState | null>(null);
@@ -140,7 +142,8 @@ export default function Page() {
   const [gameTimerEndsAt, setGameTimerEndsAt] = useState<number | null>(null);
   const [timerNow, setTimerNow] = useState(Date.now());
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
-    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [currentPlayerIndex, setCurrentPlayerIndex] = useState<number | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
 
@@ -282,14 +285,17 @@ export default function Page() {
     const bid = scoreboard.bid;
     if (!bid) {
       setBidText("No bid yet");
+      setWinningBidSummary("No bid yet");
       setCurrentHighestBidValue(0);
       setWinningBidPatterns([]);
     } else {
       setCurrentHighestBidValue(typeof bid.value === "number" ? bid.value : 0);
       if (bid.trump === "hidden") {
         setBidText(`${bid.value} by ${bid.declarer}`);
+        setWinningBidSummary(`${bid.declarer}: ${bid.value}`);
       } else {
         setBidText(`${bid.value} ${bid.trump} by ${bid.declarer}`);
+        setWinningBidSummary(`${bid.declarer}: ${bid.value} ${bid.trump}`);
       }
       setWinningBidPatterns([
         `${bid.declarer}: ${bid.value} ${bid.trump}`,
@@ -363,6 +369,9 @@ export default function Page() {
       if (typeof data.current_player_name === "string") {
         setTurnName(data.turn_context === "idle" ? `Dealer - ${data.current_player_name}` : data.current_player_name);
       }
+      if (typeof data.current_player_index === "number") {
+        setCurrentPlayerIndex(data.current_player_index);
+      }
       if (data.turn_context) {
         setTurnContext(data.turn_context);
         // Keep phase chip in sync even when payloads omit scoreboard.
@@ -403,6 +412,7 @@ export default function Page() {
           break;
         case "hand":
           setCards((data.cards || "").trim() ? data.cards.trim().split(/\s+/) : []);
+          setHandRevision((value) => value + 1);
           break;
         case "new_game_started":
           resetGameTimer();
@@ -522,7 +532,7 @@ export default function Page() {
 
   const seatDisplay = ["Seat 1 (Team 1)", "Seat 2 (Team 2)", "Seat 3 (Team 1)", "Seat 4 (Team 2)"];
   const isMyBidTurn = turnContext === "bidding";
-  const isMyTrumpTurn = turnContext === "choosing_trump";
+  const isMyTrumpTurn = turnContext === "choosing_trump" && playerIndex === currentPlayerIndex;
   const isMyPlayTurn = turnContext === "playing";
   const phaseLabel = currentPhase.replaceAll("_", " ");
   const showLandingGuide = !connected;
@@ -530,6 +540,9 @@ export default function Page() {
   const showActiveGame = connected && roomReady;
   const compactPlayingHeader = showActiveGame && currentPhase === "playing";
   const headerActionText = compactPlayingHeader ? `${phaseLabel}: ${turnName}` : null;
+  const showSnapshotHand = currentPhase !== "bidding" && currentPhase !== "choosing_trump";
+  const showSnapshotTrick = currentPhase !== "bidding" && currentPhase !== "choosing_trump";
+  const showSnapshotBid = currentPhase !== "playing" && currentPhase !== "hand_over";
   const showDebugDrawerControl = connected && isHost;
   const remainingTimerMs = gameTimerEndsAt === null ? GAME_TIMEOUT_MS : Math.max(0, gameTimerEndsAt - timerNow);
   const timerMinutes = Math.floor(remainingTimerMs / 60000);
@@ -589,6 +602,18 @@ export default function Page() {
               <h1 className={`${compactPlayingHeader ? "" : "mt-1 "}flex items-center gap-3 text-2xl font-bold tracking-tight sm:text-3xl`}>
                 <EightCardHandIcon />
                 <span>Play Kaiser</span>
+                <button
+                  className="chip min-h-9 w-10 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200 md:hidden"
+                  onClick={() => setMobileMenuOpen((open) => !open)}
+                  aria-label="Open header menu"
+                  aria-expanded={mobileMenuOpen}
+                >
+                  <span className="flex flex-col items-center gap-1" aria-hidden="true">
+                    <span className="block h-0.5 w-4 rounded bg-emerald-900" />
+                    <span className="block h-0.5 w-4 rounded bg-emerald-900" />
+                    <span className="block h-0.5 w-4 rounded bg-emerald-900" />
+                  </span>
+                </button>
               </h1>
               {compactPlayingHeader ? (
                 <p className="mt-1 text-sm font-medium text-soft">{headerActionText}</p>
@@ -596,11 +621,12 @@ export default function Page() {
                 <p className="mt-1 text-sm text-soft">Fast multiplayer rounds with live bids, play-by-play trick state, and host setup controls.</p>
               )}
             </div>
-            <div className="flex flex-col items-end gap-2 self-start">
-              <span className={`chip min-h-9 min-w-24 justify-center ${remainingTimerMs > 0 ? "border-sky-300 bg-sky-100 text-sky-900" : "border-amber-300 bg-amber-100 text-amber-900"}`}>
+            <div className="flex flex-col items-end gap-2 self-start md:flex-row md:items-center">
+              <span className={`chip hidden min-h-9 min-w-24 justify-center md:inline-flex ${remainingTimerMs > 0 ? "border-sky-300 bg-sky-100 text-sky-900" : "border-amber-300 bg-amber-100 text-amber-900"}`}>
                 {remainingTimerMs > 0 ? `Timer ${gameTimerText}` : "Time Expired"}
               </span>
-              <div className={`${compactPlayingHeader ? "grid grid-cols-2 gap-2" : "flex flex-wrap items-center justify-end gap-2"}`}>
+
+              <div className="hidden md:flex flex-wrap items-center justify-end gap-2">
                 {showDebugDrawerControl && (
                   <button
                     className={`chip min-h-9 justify-center transition ${debugDrawerOpen ? "border-sky-400 bg-sky-100 text-sky-900 hover:bg-sky-200" : "border-emerald-300 bg-emerald-100 text-emerald-900 hover:bg-emerald-200"}`}
@@ -619,13 +645,58 @@ export default function Page() {
                 >
                   Playing Guide
                 </button>
-                <span className={connected ? "chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900" : "chip min-h-9 justify-center border-amber-300 bg-amber-100 text-amber-900"}>
-                  {connected ? "Connected" : "Disconnected"}
+                {connected && (
+                  <button className="chip min-h-9 justify-center border-rose-300 bg-rose-100 text-rose-900 transition hover:bg-rose-200" onClick={connect}>Disconnect</button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 md:hidden">
+                <span className={`chip min-h-9 min-w-24 justify-center ${remainingTimerMs > 0 ? "border-sky-300 bg-sky-100 text-sky-900" : "border-amber-300 bg-amber-100 text-amber-900"}`}>
+                  {remainingTimerMs > 0 ? `Timer ${gameTimerText}` : "Time Expired"}
                 </span>
                 {connected && (
                   <button className="chip min-h-9 justify-center border-rose-300 bg-rose-100 text-rose-900 transition hover:bg-rose-200" onClick={connect}>Disconnect</button>
                 )}
               </div>
+
+              {mobileMenuOpen && (
+                <div className="w-full rounded-xl border border-emerald-200 bg-white p-2 md:hidden">
+                  <div className="grid gap-2">
+                    {showDebugDrawerControl && (
+                      <button
+                        className={`chip min-h-9 justify-center transition ${debugDrawerOpen ? "border-sky-400 bg-sky-100 text-sky-900 hover:bg-sky-200" : "border-emerald-300 bg-emerald-100 text-emerald-900 hover:bg-emerald-200"}`}
+                        onClick={() => {
+                          setDebugDrawerOpen((open) => !open);
+                          setMobileMenuOpen(false);
+                        }}
+                      >
+                        {debugDrawerOpen ? "Hide Debug" : "Debug Log"}
+                      </button>
+                    )}
+                    {connected && isHost && roomReady && (
+                      <button
+                        className="chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200"
+                        onClick={() => {
+                          send({ action: "restart_game" });
+                          setMobileMenuOpen(false);
+                        }}
+                      >
+                        Reset Game
+                      </button>
+                    )}
+                    <button
+                      className="chip min-h-9 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200"
+                      onClick={() => {
+                        setHelpOpen(true);
+                        setMobileMenuOpen(false);
+                      }}
+                      aria-label="Open game help"
+                    >
+                      Playing Guide
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -732,22 +803,30 @@ export default function Page() {
         <section className="space-y-4">
             <section className="panel animate-enter">
               <h2 className="mb-3 text-lg font-semibold">Round Snapshot</h2>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Turn: {turnName}{"\n"}Phase: {phaseLabel}{"\n"}Dealer: {dealerName}{"\n"}{thisHand}</pre>
-                <pre className="mono-block whitespace-pre-wrap"><strong>This Trick</strong>{"\n"}{thisTrickText}</pre>
-                <div className="mono-block whitespace-pre-wrap">
-                  <strong>Bid</strong>
-                  <div className="mt-2 space-y-1">
-                    {bidCardText.map((line, index) => (
-                      <div
-                        key={`${line}-${index}`}
-                        className={isWinningBidLine(line) ? "font-semibold text-emerald-700" : undefined}
-                      >
-                        {line}
-                      </div>
-                    ))}
-                  </div>
+              <div className="space-y-3">
+                <div className="grid gap-3 md:grid-cols-2">
+                  {showSnapshotHand && (
+                    <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Turn: {turnName}{"\n"}Phase: {phaseLabel}{"\n"}Dealer: {dealerName}{"\n"}Winning Bid: {winningBidSummary}{"\n"}{thisHand}</pre>
+                  )}
+                  {showSnapshotTrick && (
+                    <pre className="mono-block whitespace-pre-wrap"><strong>This Trick</strong>{"\n"}{thisTrickText}</pre>
+                  )}
                 </div>
+                {showSnapshotBid && (
+                  <div className="mono-block whitespace-pre-wrap">
+                    <strong>Bid</strong>
+                    <div className="mt-2 space-y-1">
+                      {bidCardText.map((line, index) => (
+                        <div
+                          key={`${line}-${index}`}
+                          className={isWinningBidLine(line) ? "font-semibold text-emerald-700" : undefined}
+                        >
+                          {line}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
 
@@ -797,7 +876,7 @@ export default function Page() {
                   </div>
                 )}
 
-                {currentPhase === "choosing_trump" && (
+                {currentPhase === "choosing_trump" && isMyTrumpTurn && (
                   <div className="grid gap-3 rounded-xl border border-lime-200 bg-lime-50/70 p-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
                       <p className="text-xs uppercase tracking-[0.2em] text-soft">Select Trump</p>
@@ -806,7 +885,7 @@ export default function Page() {
                       </select>
                     </div>
                     <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-3">
-                      <button disabled={!isMyTrumpTurn} className="btn-primary" onClick={() => send({ action: "choose_trump", trump: contractTrump })}>Confirm Trump</button>
+                      <button className="btn-primary" onClick={() => send({ action: "choose_trump", trump: contractTrump })}>Confirm Trump</button>
                     </div>
                   </div>
                 )}
@@ -846,7 +925,7 @@ export default function Page() {
                       {handActionError}
                     </div>
                   )}
-                  <div className="grid grid-cols-4 gap-2 lg:grid-cols-6">
+                  <div key={`hand-${handRevision}`} className="grid grid-cols-4 gap-2 lg:grid-cols-6">
                     {cards.map((card) => (
                       <button
                         key={card}

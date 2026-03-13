@@ -191,9 +191,6 @@ class GameRoom:
 
     def restart_game(self) -> None:
         self.game = KaiserGame.new_default()
-        self.bot_policies = {}
-        self.bot_personas = {}
-        self.setup_complete = False
         self.current_game_winner_recorded = False
         self.new_game_votes.clear()
         self.mark_timeout_refresh()
@@ -201,6 +198,9 @@ class GameRoom:
             if seat in self.players:
                 name = self.player_names.get(seat, f"Player {seat + 1}")
                 self.game.players[seat].name = name
+            elif seat in self.bot_personas:
+                self.game.players[seat].name = self.bot_personas[seat]["name"]
+        self.setup_complete = bool(self.players or self.bot_personas)
         self._recompute_ready()
 
     def start_new_game(self) -> None:
@@ -885,7 +885,7 @@ class GameServer:
                 game = room.game
                 await room.broadcast({
                     "type": "game_update",
-                    "message": "Game reset. Room returned to setup. Assign seats to start again.",
+                    "message": "Game reset. Existing seats preserved. Dealer can deal again.",
                     "state": game.state_summary(),
                     "phase": game.phase,
                     **self._turn_payload(game),
