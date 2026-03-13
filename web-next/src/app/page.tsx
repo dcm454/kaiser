@@ -70,7 +70,7 @@ function GuideContent() {
           <li>Once the contract value is established, the winner chooses trump.</li>
           <li>In play, follow suit when possible. Highest card of lead suit wins unless trump is played.</li>
           <li>The 5H adds 5 points. The 3S subtracts 3 points.</li>
-          <li>The winning target is 52, or 64 after any no-trump contract appears.</li>
+          <li>The winning target is 52, or 64 after a successful no-trump contract.</li>
           <li>Each game must be completed within 60 minutes.</li>
         </ul>
       </article>
@@ -115,7 +115,7 @@ export default function Page() {
   const [turnContext, setTurnContext] = useState<string | null>(null);
   const [scoreSummary, setScoreSummary] = useState("-");
   const [sessionWinsSummary, setSessionWinsSummary] = useState("-");
-  const [winningStatus, setWinningStatus] = useState("Target 52 (no no-trump bids yet)");
+  const [winningStatus, setWinningStatus] = useState("Target 52 (no successful no-trump contract yet)");
   const [newGameStatus, setNewGameStatus] = useState("No new game prompt yet.");
   const [startNewGameVisible, setStartNewGameVisible] = useState(false);
   const [startNewGameReady, setStartNewGameReady] = useState(false);
@@ -257,7 +257,7 @@ export default function Page() {
     const target = winning.target ?? 52;
     const noTrumpSeen = winning.no_trump_bid_seen === true;
     const winnerTeamLabel = winning.winner_team_label;
-    const base = `Target ${target} (${noTrumpSeen ? "no-trump bid seen" : "no no-trump bids yet"})`;
+    const base = `Target ${target} (${noTrumpSeen ? "successful no-trump contract seen" : "no successful no-trump contract yet"})`;
     setWinningStatus(winnerTeamLabel ? `${base} | Winner: ${winnerTeamLabel} (bid out)` : `${base} | No winner yet`);
 
     const newGame = scoreboard.new_game ?? {};
@@ -502,7 +502,7 @@ export default function Page() {
     setWs(socket);
   };
 
-  const suits = ["clubs", "diamonds", "hearts", "spades", "no-trump"];
+  const suits = ["clubs", "diamonds", "hearts", "spades"];
 
   const thisTrickText = useMemo(() => {
     const displayTrickNumber = trickCompleted && trickNumber > 1 ? trickNumber - 1 : trickNumber;
@@ -850,7 +850,7 @@ export default function Page() {
                       <div className="flex flex-wrap gap-2">
                         {[7, 8, 9, 10, 11, 12].map((n) => (
                           (() => {
-                            const unavailable = n <= currentHighestBidValue;
+                            const unavailable = bidNoTrump ? n < currentHighestBidValue : n <= currentHighestBidValue;
                             return (
                           <button
                             key={n}
@@ -871,7 +871,7 @@ export default function Page() {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
                         disabled={!isMyBidTurn}
@@ -881,12 +881,10 @@ export default function Page() {
                             ? "border-purple-400 bg-purple-100 text-purple-900 hover:bg-purple-200"
                             : "border-emerald-200 bg-white text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50"
                         }`}
+                        aria-pressed={bidNoTrump}
                       >
-                        {bidNoTrump ? "\u2713 No Trump" : "No Trump"}
+                        No
                       </button>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
                       <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "pass" })}>Pass</button>
                       <button disabled={!isMyBidTurn} className="btn-secondary" onClick={() => send({ action: "take" })}>Take</button>
                     </div>

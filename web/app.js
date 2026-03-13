@@ -366,7 +366,7 @@ function updateScoreboard(payload) {
     const target = winning.target ?? 52;
     const noTrumpSeen = winning.no_trump_bid_seen === true;
     const winnerTeamLabel = winning.winner_team_label || null;
-    const base = `Target ${target} (${noTrumpSeen ? "no-trump bid seen" : "no no-trump bids yet"})`;
+    const base = `Target ${target} (${noTrumpSeen ? "successful no-trump contract seen" : "no successful no-trump contract yet"})`;
     const statusText = winnerTeamLabel ? `${base} | Winner: ${winnerTeamLabel} (bid out)` : `${base} | No winner yet`;
     setTextIfPresent(winningStatusEl, statusText);
   }

@@ -61,7 +61,7 @@ The first connected player becomes host and configures virtual players before ga
 Host control note: `restart_game` resets the game to a fresh start (scores and hand state) while keeping current seat assignments.
 It also includes a live scoreboard panel showing:
 - Live Score (team names shown as player pairs, e.g., `Alice/Carol` vs `Bob/Dave`)
-- Bid-Out Status (live win target and winner: target 52 until any no-trump bid appears, then target 64)
+- Bid-Out Status (live win target and winner: target 52 until a successful no-trump contract, then target 64)
 - This Trick (current trick card plays and trick number; shows hand completed after trick 8)
 - Current Bid (value, trump, declarer)
 - Click-to-play cards in `Your hand` (no card token typing needed)
@@ -87,7 +87,7 @@ Run offline automated matches for behavior tuning and decision inspection:
 python3 bot_sim.py --hands 50 --seed 42 --profiles balanced,aggressive,cautious,chaotic --log-file bot_decisions.jsonl
 ```
 
-Simulation runs up to `--hands`, but stops early when a team wins the game (bid-out winner at target 52, or 64 if any no-trump bid occurred).
+Simulation runs up to `--hands`, but stops early when a team wins the game (bid-out winner at target 52, or 64 after a successful no-trump contract).
 
 Available preset profiles:
 - `cautious`
@@ -277,8 +277,8 @@ Game score is cumulative across multiple hands.
 
 Game winner rule:
 - A team only wins when it bids out (it is the contracting team for that hand and makes its bid).
-- Score target is `52` if no no-trump bid has occurred in the game.
-- If any no-trump bid occurs at any time, winning target becomes `64`.
+- Score target is `52` until a successful no-trump contract occurs in the game.
+- After a successful no-trump contract, winning target becomes `64`.
 
 Card token format:
 - Rank + suit letter: `7c`, `10d`, `Qh`, `As`

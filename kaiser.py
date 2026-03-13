@@ -216,8 +216,12 @@ class KaiserGame:
         if value < BID_MIN or value > BID_MAX:
             raise ValueError(f"Bid value must be between {BID_MIN} and {BID_MAX}")
 
-        if self.highest_bid is not None and value <= self.highest_bid.value:
-            raise ValueError("Bid must be higher than current highest bid")
+        if self.highest_bid is not None:
+            allow_equal_no_trump = trump == "no-trump" and value == self.highest_bid.value
+            is_too_low = value < self.highest_bid.value
+            is_equal_without_no_trump = value == self.highest_bid.value and not allow_equal_no_trump
+            if is_too_low or is_equal_without_no_trump:
+                raise ValueError("Bid must be higher than current highest bid (or equal with no-trump)")
 
         stored_trump = "no-trump" if trump == "no-trump" else "hidden"
         bid = Bid(value=value, trump=stored_trump, player_index=self.bid_turn_index)
@@ -265,7 +269,7 @@ class KaiserGame:
 
         taken = Bid(
             value=self.highest_bid.value,
-            trump="hidden",
+            trump=self.highest_bid.trump,
             player_index=self.dealer_index,
         )
         self.highest_bid = taken
@@ -294,8 +298,6 @@ class KaiserGame:
         declarer_name = self.players[winner_index].name
         self.contract = Bid(value=self.highest_bid.value, trump=trump, player_index=winner_index)
         self.highest_bid = self.contract
-        if trump == "no-trump":
-            self.no_trump_bid_seen = True
         self.last_bid = f"{self.contract.value} {self.contract.trump}"
         self.bid_history.append(f"{declarer_name}: trump {trump}")
 
@@ -317,7 +319,6 @@ class KaiserGame:
             declarer_name = self.players[winner_index].name
             self.contract = Bid(value=self.highest_bid.value, trump="no-trump", player_index=winner_index)
             self.highest_bid = self.contract
-            self.no_trump_bid_seen = True
             self.last_bid = f"{self.contract.value} no-trump"
             self.bid_history.append(f"{declarer_name}: trump no-trump (declared at bid)")
             self.phase = "playing"
@@ -409,10 +410,15 @@ class KaiserGame:
         score_multiplier = 2 if self.contract.trump == "no-trump" else 1
         
         # Contracting team: made bid gets points, failed deducts bid
-        if self.team_points[contracting_team] >= self.contract.value:
+        made_contract = self.team_points[contracting_team] >= self.contract.value
+        if made_contract:
             self.game_score[contracting_team] += self.team_points[contracting_team] * score_multiplier
         else:
             self.game_score[contracting_team] -= self.contract.value * score_multiplier
+
+        # Winning target moves to 64 only after a successful no-trump contract.
+        if made_contract and self.contract.trump == "no-trump":
+            self.no_trump_bid_seen = True
         
         # Defending team: all-or-nothing at current game target (52/64).
         # If this hand's defending points would push them past target,
