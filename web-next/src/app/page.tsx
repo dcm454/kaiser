@@ -31,6 +31,39 @@ function extractBidProgressionLines(biddingSummary: string): string[] {
     );
 }
 
+function formatBotActionLog(botAction: Record<string, any>): string {
+  const botName = typeof botAction.bot_name === "string" ? botAction.bot_name : "BOT";
+  const action = typeof botAction.action === "string" ? botAction.action : "action";
+  const reason = typeof botAction.reason === "string" ? botAction.reason : "";
+  const debug = botAction.debug ?? {};
+
+  const parts: string[] = [`BOT ${botName}: ${action}`];
+  if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
+    parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
+  }
+  if (debug.bid_strength_no_trump !== undefined && debug.bid_strength_best_suit_trump) {
+    parts.push(`nt=${debug.bid_strength_no_trump} vs ${debug.bid_strength_best_suit} (${debug.bid_strength_best_suit_trump})`);
+  }
+  if (debug.bid_strength_best_trump === "no-trump") {
+    const margin = action === "take" ? debug.no_trump_take_margin : debug.no_trump_bid_margin;
+    if (debug.bid_strength_no_trump_advantage !== undefined && margin !== undefined) {
+      parts.push(`why=no-trump +${debug.bid_strength_no_trump_advantage} over ${debug.bid_strength_best_suit_trump} (margin ${margin})`);
+    } else {
+      parts.push(`why=no-trump beat ${debug.bid_strength_best_suit_trump}`);
+    }
+  }
+  if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
+    parts.push(`hand=${debug.hand_cards.join(" ")}`);
+  }
+  if (typeof debug.play_reason === "string" && debug.play_reason.length > 0) {
+    parts.push(`play_reason=${debug.play_reason}`);
+  } else if (reason.length > 0) {
+    parts.push(`reason=${reason}`);
+  }
+
+  return parts.join(" | ");
+}
+
 function EightCardHandIcon() {
   return (
     <svg
@@ -470,24 +503,7 @@ export default function Page() {
       renderScoreboard(data);
 
       if (data.bot_action && typeof data.bot_action.bot_name === "string") {
-        const botName = data.bot_action.bot_name;
-        const action = data.bot_action.action ?? "action";
-        const reason = typeof data.bot_action.reason === "string" ? data.bot_action.reason : "";
-        const debug = data.bot_action.debug ?? {};
-
-        const parts: string[] = [`BOT ${botName}: ${action}`];
-        if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
-          parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
-        }
-        if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
-          parts.push(`hand=${debug.hand_cards.join(" ")}`);
-        }
-        if (typeof debug.play_reason === "string" && debug.play_reason.length > 0) {
-          parts.push(`play_reason=${debug.play_reason}`);
-        } else if (reason.length > 0) {
-          parts.push(`reason=${reason}`);
-        }
-        appendLog(parts.join(" | "));
+        appendLog(formatBotActionLog(data.bot_action));
       }
     };
 

@@ -61,6 +61,34 @@ function addLog(message) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function formatBotActionLog(botAction) {
+  const debug = botAction.debug || {};
+  const parts = [`BOT ${botAction.bot_name}: ${botAction.action}`];
+  if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
+    parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
+  }
+  if (debug.bid_strength_no_trump !== undefined && debug.bid_strength_best_suit_trump) {
+    parts.push(`nt=${debug.bid_strength_no_trump} vs ${debug.bid_strength_best_suit} (${debug.bid_strength_best_suit_trump})`);
+  }
+  if (debug.bid_strength_best_trump === "no-trump") {
+    const margin = botAction.action === "take" ? debug.no_trump_take_margin : debug.no_trump_bid_margin;
+    if (debug.bid_strength_no_trump_advantage !== undefined && margin !== undefined) {
+      parts.push(`why=no-trump +${debug.bid_strength_no_trump_advantage} over ${debug.bid_strength_best_suit_trump} (margin ${margin})`);
+    } else {
+      parts.push(`why=no-trump beat ${debug.bid_strength_best_suit_trump}`);
+    }
+  }
+  if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
+    parts.push(`hand=${debug.hand_cards.join(" ")}`);
+  }
+  if (debug.play_reason) {
+    parts.push(`play_reason=${debug.play_reason}`);
+  } else if (botAction.reason) {
+    parts.push(`reason=${botAction.reason}`);
+  }
+  return parts.join(" | ");
+}
+
 function setTextIfPresent(element, text) {
   if (element) {
     element.textContent = text;
@@ -472,20 +500,7 @@ function handleMessage(data) {
       if (data.bidding) addLog(data.bidding);
       if (data.trick) addLog(data.trick);
       if (data.bot_action && data.bot_action.bot_name) {
-        const debug = data.bot_action.debug || {};
-        const parts = [`🤖 ${data.bot_action.bot_name}: ${data.bot_action.action}`];
-        if (debug.bid_strength_best !== undefined && debug.bid_strength_best_trump) {
-          parts.push(`strength=${debug.bid_strength_best} (${debug.bid_strength_best_trump})`);
-        }
-        if (Array.isArray(debug.hand_cards) && debug.hand_cards.length > 0) {
-          parts.push(`hand=${debug.hand_cards.join(" ")}`);
-        }
-        if (debug.play_reason) {
-          parts.push(`play_reason=${debug.play_reason}`);
-        } else if (data.bot_action.reason) {
-          parts.push(`reason=${data.bot_action.reason}`);
-        }
-        addLog(parts.join(" | "));
+        addLog(formatBotActionLog(data.bot_action));
       }
       break;
     case "phase_change":
