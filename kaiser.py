@@ -259,7 +259,7 @@ class KaiserGame:
         self._advance_bidding_turn()
         return f"{bidder}: pass"
 
-    def dealer_take_bid(self) -> str:
+    def dealer_take_bid(self, trump: Optional[str] = None) -> str:
         if self.phase != "bidding":
             raise ValueError("Bidding is not active")
         if self.bid_turn_index != self.dealer_index:
@@ -267,9 +267,12 @@ class KaiserGame:
         if self.highest_bid is None:
             raise ValueError("No highest bid to take")
 
+        if trump is not None and trump != "no-trump":
+            raise ValueError("Dealer take may only declare no-trump explicitly")
+
         taken = Bid(
             value=self.highest_bid.value,
-            trump=self.highest_bid.trump,
+            trump="no-trump" if trump == "no-trump" else self.highest_bid.trump,
             player_index=self.dealer_index,
         )
         self.highest_bid = taken

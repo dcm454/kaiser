@@ -124,6 +124,11 @@ Example `bot_overrides.json`:
 ]
 ```
 
+Useful no-trump tuning fields for overrides:
+- `no_trump_bias`: global multiplier for the dedicated no-trump evaluator
+- `no_trump_bid_margin`: how far no-trump must beat the best suit strength before a bot bids no-trump
+- `no_trump_take_margin`: how far no-trump must beat the best suit strength before a dealer take becomes no-trump
+
 Decision log output is JSONL (`bot_decisions.jsonl`) with per-decision context (`hand`, `trick`, `phase`, `player`, `action`, `payload`, `reason`) for analysis.
 
 Analyze a decision log summary:

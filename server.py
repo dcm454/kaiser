@@ -498,7 +498,7 @@ class GameServer:
                     if action == "bid":
                         result = game.place_bid(value=int(payload["value"]), trump=payload.get("trump"))
                     elif action == "take":
-                        result = game.dealer_take_bid()
+                        result = game.dealer_take_bid(trump=payload.get("trump"))
                     elif action == "pass":
                         result = game.pass_bid()
                     else:
@@ -982,7 +982,7 @@ class GameServer:
                 require_active_bidder()
                 if player_index != game.dealer_index:
                     raise ValueError("Only the dealer can take the highest bid")
-                result = game.dealer_take_bid()
+                result = game.dealer_take_bid(trump=data.get("trump"))
                 await room.broadcast({
                     "type": "game_update",
                     "message": result,

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from kaiser import BID_MAX, BID_MIN, RANK_ORDER, TRUMP_ORDER, Bid, Card, KaiserGame
+from kaiser import BID_MAX, BID_MIN, RANK_ORDER, SUITS, TRUMP_ORDER, Bid, Card, KaiserGame
 
 
 @dataclass
@@ -16,6 +16,8 @@ class BotProfile:
     bid_aggression: float = 1.0
     bid_risk_buffer: int = 0
     no_trump_bias: float = 1.0
+    no_trump_bid_margin: float = 3.0
+    no_trump_take_margin: float = 5.0
     dealer_take_threshold: float = 52.0
     lead_high_bias: float = 0.5
     trump_spend_bias: float = 0.5
@@ -109,6 +111,103 @@ class BotPolicy:
                     return False
         return True
 
+    def _no_trump_strength(self, hand: List[Card]) -> float:
+        rank_scores = {
+            "A": 6.0,
+            "K": 3.5,
+            "Q": 2.2,
+            "J": 1.3,
+            "10": 0.8,
+            "9": 0.3,
+            "8": 0.1,
+        }
+        cards_by_suit: Dict[str, List[Card]] = {suit: [] for suit in SUITS}
+        for card in hand:
+            cards_by_suit[card.suit].append(card)
+
+        score = 0.0
+        stopped_suits = 0
+        controlled_suits = 0
+
+        for suit in SUITS:
+            suit_cards = sorted(cards_by_suit[suit], key=self._rank_value, reverse=True)
+            ranks = {card.rank for card in suit_cards}
+            honor_count = sum(1 for card in suit_cards if card.rank in {"A", "K", "Q", "J", "10"})
+
+            for card in suit_cards:
+                score += rank_scores.get(card.rank, 0.0)
+
+            is_stopped = False
+            has_control = False
+            if "A" in ranks:
+                score += 2.5
+                is_stopped = True
+                has_control = True
+            elif "K" in ranks and len(suit_cards) >= 2:
+                score += 1.5
+                is_stopped = True
+                has_control = True
+            elif "Q" in ranks and "J" in ranks and len(suit_cards) >= 3:
+                score += 1.0
+                is_stopped = True
+            elif "J" in ranks and "10" in ranks and len(suit_cards) >= 4:
+                score += 0.5
+                is_stopped = True
+
+            if "A" in ranks and "K" in ranks:
+                score += 4.0
+                has_control = True
+            elif "A" in ranks and "Q" in ranks:
+                score += 2.5
+            elif "K" in ranks and "Q" in ranks and "J" in ranks:
+                score += 3.0
+                has_control = True
+            elif "Q" in ranks and "J" in ranks and "10" in ranks:
+                score += 2.0
+
+            if len(suit_cards) >= 3 and honor_count >= 2:
+                score += 0.75 * (len(suit_cards) - 2)
+
+            if len(suit_cards) == 0:
+                score -= 0.75
+            elif len(suit_cards) == 1 and "A" not in ranks:
+                score -= 1.25
+            elif len(suit_cards) == 2 and honor_count == 0:
+                score -= 0.5
+
+            if is_stopped:
+                stopped_suits += 1
+            if has_control:
+                controlled_suits += 1
+
+        hearts_ranks = {card.rank for card in cards_by_suit["hearts"]}
+        if "5" in hearts_ranks:
+            score += 4.0
+            if "A" in hearts_ranks or "K" in hearts_ranks:
+                score += 2.0
+            elif "Q" in hearts_ranks or "J" in hearts_ranks or "10" in hearts_ranks:
+                score += 1.0
+
+        if "3" in {card.rank for card in cards_by_suit["spades"]}:
+            score -= 3.0
+
+        score += max(0, stopped_suits - 1) * 1.5
+        if controlled_suits >= 2:
+            score += 2.0 + (controlled_suits - 2) * 1.0
+
+        # Keep no-trump strengths on roughly the same scale as suit-trump strengths.
+        return score * 3.0 * self.profile.no_trump_bias
+
+    def _preferred_bid_trump(self, strengths: Dict[str, float], take_context: bool = False) -> Tuple[str, float, str, float]:
+        suit_strengths = {trump: score for trump, score in strengths.items() if trump != "no-trump"}
+        best_suit_trump = max(suit_strengths, key=lambda trump: suit_strengths[trump])
+        best_suit_strength = suit_strengths[best_suit_trump]
+        no_trump_strength = strengths["no-trump"]
+        margin = self.profile.no_trump_take_margin if take_context else self.profile.no_trump_bid_margin
+        if no_trump_strength >= best_suit_strength + margin:
+            return "no-trump", no_trump_strength, best_suit_trump, best_suit_strength
+        return best_suit_trump, best_suit_strength, best_suit_trump, best_suit_strength
+
     def _hand_strength_by_trump(self, hand: List[Card]) -> Dict[str, float]:
         strength: Dict[str, float] = {trump: 0.0 for trump in TRUMP_ORDER}
 
@@ -121,11 +220,11 @@ class BotPolicy:
                     base -= 3
 
             for trump in TRUMP_ORDER:
+                if trump == "no-trump":
+                    continue
                 card_score = float(base)
                 if trump != "no-trump" and card.suit == trump:
                     card_score += 5.0
-                if trump == "no-trump":
-                    card_score *= self.profile.no_trump_bias
                 strength[trump] += card_score
 
         for trump in TRUMP_ORDER:
@@ -134,13 +233,13 @@ class BotPolicy:
             suit_len = sum(1 for c in hand if c.suit == trump)
             strength[trump] += suit_len * 1.75
 
+        strength["no-trump"] = self._no_trump_strength(hand)
         return strength
 
     def choose_bid_action(self, game: KaiserGame, player_index: int) -> Tuple[str, Dict[str, object], str]:
         hand = game.players[player_index].hand
         strengths = self._hand_strength_by_trump(hand)
-        best_trump = max(strengths, key=lambda t: strengths[t])
-        best_strength = strengths[best_trump]
+        best_trump, best_strength, best_suit_trump, best_suit_strength = self._preferred_bid_trump(strengths)
 
         projected_bid = int((best_strength / 8.0) * self.profile.bid_aggression)
         projected_bid = self._clamp_bid(projected_bid)
@@ -148,43 +247,67 @@ class BotPolicy:
         highest = game.highest_bid
         highest_value = highest.value if highest else 0
 
-        reason = f"best_trump={best_trump}, strength={best_strength:.1f}, projected_bid={projected_bid}"
+        reason = (
+            f"best_trump={best_trump}, strength={best_strength:.1f}, projected_bid={projected_bid}, "
+            f"best_suit={best_suit_trump}, best_suit_strength={best_suit_strength:.1f}, "
+            f"no_trump_strength={strengths['no-trump']:.1f}"
+        )
         debug = {
             "hand_cards": self._hand_cards_short(hand),
             "bid_strength_best": round(best_strength, 2),
             "bid_strength_best_trump": best_trump,
+            "bid_strength_best_suit_trump": best_suit_trump,
+            "bid_strength_best_suit": round(best_suit_strength, 2),
+            "bid_strength_no_trump": round(strengths["no-trump"], 2),
             "bid_strength_by_trump": {trump: round(score, 2) for trump, score in strengths.items()},
             "projected_bid": projected_bid,
             "current_highest_bid": highest_value,
         }
 
         if highest is None:
-            return "bid", {"value": projected_bid, "__debug": debug}, reason
+            payload: Dict[str, object] = {"value": projected_bid, "__debug": debug}
+            if best_trump == "no-trump":
+                payload["trump"] = "no-trump"
+            return "bid", payload, reason
 
-        min_needed = highest_value + 1 + self.profile.bid_risk_buffer
-        if projected_bid >= min_needed:
-            return "bid", {"value": projected_bid, "__debug": debug}, reason
+        can_bid = projected_bid >= highest_value if best_trump == "no-trump" else projected_bid >= highest_value + 1 + self.profile.bid_risk_buffer
+        if can_bid:
+            payload = {"value": projected_bid, "__debug": debug}
+            if best_trump == "no-trump":
+                payload["trump"] = "no-trump"
+            return "bid", payload, reason
 
         is_dealer_turn = player_index == game.dealer_index == game.bid_turn_index
-        projected_can_match_current_bid = projected_bid >= highest_value
-        if is_dealer_turn and projected_can_match_current_bid and best_strength >= self.profile.dealer_take_threshold:
+        take_trump, take_strength, _, _ = self._preferred_bid_trump(strengths, take_context=True)
+        effective_take_trump = "no-trump" if highest is not None and highest.trump == "no-trump" else take_trump
+        projected_take_bid = int((take_strength / 8.0) * self.profile.bid_aggression)
+        projected_take_bid = self._clamp_bid(projected_take_bid)
+        projected_can_match_current_bid = projected_take_bid >= highest_value
+        if is_dealer_turn and projected_can_match_current_bid and take_strength >= self.profile.dealer_take_threshold:
             # Taking partner's bid should be rare and only done with very high confidence.
             if highest is not None and highest.player_index != player_index and (highest.player_index % 2) == (player_index % 2):
                 high_confidence_threshold = self.profile.dealer_take_threshold + 12.0
-                can_confidently_support_current_bid = projected_bid >= highest_value
-                if best_strength >= high_confidence_threshold and can_confidently_support_current_bid:
-                    return "take", {"__debug": debug}, f"{reason}, partner_take_high_confidence"
+                can_confidently_support_current_bid = projected_take_bid >= highest_value
+                if take_strength >= high_confidence_threshold and can_confidently_support_current_bid:
+                    payload = {"__debug": debug}
+                    if effective_take_trump == "no-trump" and (highest is None or highest.trump != "no-trump"):
+                        payload["trump"] = "no-trump"
+                    return "take", payload, f"{reason}, take_trump={effective_take_trump}, partner_take_high_confidence"
                 return "pass", {"__debug": debug}, f"{reason}, avoid_partner_take"
 
-            return "take", {"__debug": debug}, reason
+            payload = {"__debug": debug}
+            if effective_take_trump == "no-trump" and (highest is None or highest.trump != "no-trump"):
+                payload["trump"] = "no-trump"
+            return "take", payload, f"{reason}, take_trump={effective_take_trump}"
 
         return "pass", {"__debug": debug}, reason
 
     def choose_trump_action(self, game: KaiserGame, player_index: int) -> Tuple[str, Dict[str, object], str]:
         hand = game.players[player_index].hand
         strengths = self._hand_strength_by_trump(hand)
-        best_trump = max(strengths, key=lambda t: strengths[t])
-        best_strength = strengths[best_trump]
+        suit_strengths = {trump: score for trump, score in strengths.items() if trump != "no-trump"}
+        best_trump = max(suit_strengths, key=lambda t: suit_strengths[t])
+        best_strength = suit_strengths[best_trump]
         reason = f"select_best_trump={best_trump}, strength={best_strength:.1f}"
         debug = {
             "hand_cards": self._hand_cards_short(hand),
@@ -425,8 +548,7 @@ class BotSimulator:
     def _bidding_debug_payload(policy: BotPolicy, game: KaiserGame, player_index: int) -> Dict[str, object]:
         hand = game.players[player_index].hand
         strengths = policy._hand_strength_by_trump(hand)
-        best_trump = max(strengths, key=lambda t: strengths[t])
-        best_strength = strengths[best_trump]
+        best_trump, best_strength, best_suit_trump, best_suit_strength = policy._preferred_bid_trump(strengths)
         projected_bid = int((best_strength / 8.0) * policy.profile.bid_aggression)
         projected_bid = policy._clamp_bid(projected_bid)
         highest_value = game.highest_bid.value if game.highest_bid is not None else 0
@@ -435,6 +557,9 @@ class BotSimulator:
             "hand_cards": [card.short() for card in hand],
             "bid_strength_best": round(best_strength, 2),
             "bid_strength_best_trump": best_trump,
+            "bid_strength_best_suit_trump": best_suit_trump,
+            "bid_strength_best_suit": round(best_suit_strength, 2),
+            "bid_strength_no_trump": round(strengths["no-trump"], 2),
             "bid_strength_by_trump": {trump: round(score, 2) for trump, score in strengths.items()},
             "projected_bid": projected_bid,
             "current_highest_bid": highest_value,
@@ -507,10 +632,10 @@ class BotSimulator:
         if game.bid_turn_index != player_index:
             raise ValueError("Out-of-turn bidding action")
         if action == "bid":
-            game.place_bid(int(payload["value"]))
+            game.place_bid(int(payload["value"]), trump=str(payload["trump"]) if payload.get("trump") else None)
             return
         if action == "take":
-            game.dealer_take_bid()
+            game.dealer_take_bid(trump=str(payload["trump"]) if payload.get("trump") else None)
             return
         if action == "pass":
             game.pass_bid()
