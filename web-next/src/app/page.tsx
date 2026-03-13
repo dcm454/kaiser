@@ -136,6 +136,7 @@ export default function Page() {
   const [setupInfo, setSetupInfo] = useState<SetupState | null>(null);
   const [setupAssignments, setSetupAssignments] = useState<(string | null)[]>([null, null, null, null]);
   const [contractTrump, setContractTrump] = useState("clubs");
+  const [bidNoTrump, setBidNoTrump] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [joinRejection, setJoinRejection] = useState<string | null>(null);
   const [handActionError, setHandActionError] = useState<string | null>(null);
@@ -146,6 +147,10 @@ export default function Page() {
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState<number | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
+
+  useEffect(() => {
+    if (currentPhase !== "bidding") setBidNoTrump(false);
+  }, [currentPhase]);
 
   const isMyTurn = useMemo(() => {
     if (playerIndex === null || !ws) return false;
@@ -834,10 +839,7 @@ export default function Page() {
               <section className="panel animate-enter space-y-4">
                 <div className="flex flex-wrap gap-2">
                   {currentPhase === "idle" && dealerIndex === playerIndex && (
-                    <>
-                      <button className="btn-primary" onClick={() => send({ action: "deal" })}>Deal</button>
-                      <button className="btn-secondary" onClick={() => send({ action: "rotate" })}>Rotate</button>
-                    </>
+                    <button className="btn-primary" onClick={() => send({ action: "deal" })}>Deal</button>
                   )}
                 </div>
 
@@ -859,7 +861,7 @@ export default function Page() {
                                 ? "border-emerald-100 bg-emerald-50 text-emerald-300 opacity-55"
                                 : "border-emerald-200 bg-white text-emerald-900 hover:border-emerald-400 hover:bg-emerald-100 disabled:opacity-50"
                             }`}
-                            onClick={() => send({ action: "bid", value: n })}
+                            onClick={() => send({ action: "bid", value: n, ...(bidNoTrump ? { trump: "no-trump" } : {}) })}
                           >
                             {n}
                           </button>
@@ -867,6 +869,21 @@ export default function Page() {
                           })()
                         ))}
                       </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={!isMyBidTurn}
+                        onClick={() => setBidNoTrump((prev) => !prev)}
+                        className={`rounded-lg border px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          bidNoTrump
+                            ? "border-purple-400 bg-purple-100 text-purple-900 hover:bg-purple-200"
+                            : "border-emerald-200 bg-white text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50"
+                        }`}
+                      >
+                        {bidNoTrump ? "\u2713 No Trump" : "No Trump"}
+                      </button>
                     </div>
 
                     <div className="flex flex-wrap gap-2">

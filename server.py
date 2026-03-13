@@ -496,7 +496,7 @@ class GameServer:
                 if game.phase == "bidding":
                     action, payload, reason = bot_policy.choose_bid_action(game, seat)
                     if action == "bid":
-                        result = game.place_bid(value=int(payload["value"]))
+                        result = game.place_bid(value=int(payload["value"]), trump=payload.get("trump"))
                     elif action == "take":
                         result = game.dealer_take_bid()
                     elif action == "pass":
@@ -912,7 +912,7 @@ class GameServer:
             elif action == "bid":
                 require_active_bidder()
                 value = data.get("value")
-                result = game.place_bid(value=value)
+                result = game.place_bid(value=value, trump=data.get("trump"))
                 await room.broadcast({
                     "type": "game_update",
                     "message": result,

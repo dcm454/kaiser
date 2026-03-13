@@ -340,6 +340,29 @@ class BotPolicy:
         lowest_legal = min(legal, key=self._rank_value)
         highest_legal = max(legal, key=self._rank_value)
 
+        # If 5H is in the current trick, always play the highest winning card or,
+        # if unable to win by following suit, the highest available trump.
+        five_hearts_in_trick = any(self._is_card(card, "5", "hearts") for _, card in game.current_trick)
+        if five_hearts_in_trick:
+            if winning_cards:
+                target = max(winning_cards, key=self._rank_value)
+                token = self._card_to_token(target)
+                debug = {
+                    "hand_cards_before_play": self._hand_cards_short(player.hand),
+                    "play_reason": "5h_in_trick_highest_winning",
+                }
+                return "play", {"card": token, "__debug": debug}, "5h_in_trick_highest_winning"
+            if contract_trump != "no-trump":
+                trump_cards_legal = [c for c in legal if c.suit == contract_trump]
+                if trump_cards_legal:
+                    target = max(trump_cards_legal, key=self._rank_value)
+                    token = self._card_to_token(target)
+                    debug = {
+                        "hand_cards_before_play": self._hand_cards_short(player.hand),
+                        "play_reason": "5h_in_trick_highest_trump",
+                    }
+                    return "play", {"card": token, "__debug": debug}, "5h_in_trick_highest_trump"
+
         target: Card
         reason: str
 

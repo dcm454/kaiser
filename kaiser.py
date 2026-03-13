@@ -210,7 +210,7 @@ class KaiserGame:
     def current_bidder(self) -> Player:
         return self.players[self.bid_turn_index]
 
-    def place_bid(self, value: int) -> str:
+    def place_bid(self, value: int, trump: Optional[str] = None) -> str:
         if self.phase != "bidding":
             raise ValueError("Bidding is not active")
         if value < BID_MIN or value > BID_MAX:
@@ -219,7 +219,8 @@ class KaiserGame:
         if self.highest_bid is not None and value <= self.highest_bid.value:
             raise ValueError("Bid must be higher than current highest bid")
 
-        bid = Bid(value=value, trump="hidden", player_index=self.bid_turn_index)
+        stored_trump = "no-trump" if trump == "no-trump" else "hidden"
+        bid = Bid(value=value, trump=stored_trump, player_index=self.bid_turn_index)
         self.highest_bid = bid
         self.bids_made += 1
 
@@ -310,10 +311,24 @@ class KaiserGame:
     def _finalize_bidding(self) -> None:
         if self.highest_bid is None:
             raise ValueError("Cannot finalize bidding without a bid")
-        self.contract = None
-        self.phase = "choosing_trump"
-        self.trump_select_index = self.highest_bid.player_index
-        self.current_trick.clear()
+        if self.highest_bid.trump == "no-trump":
+            # No-trump was declared during bidding — skip trump selection phase.
+            winner_index = self.highest_bid.player_index
+            declarer_name = self.players[winner_index].name
+            self.contract = Bid(value=self.highest_bid.value, trump="no-trump", player_index=winner_index)
+            self.highest_bid = self.contract
+            self.no_trump_bid_seen = True
+            self.last_bid = f"{self.contract.value} no-trump"
+            self.bid_history.append(f"{declarer_name}: trump no-trump (declared at bid)")
+            self.phase = "playing"
+            self.trick_leader_index = winner_index
+            self.play_turn_index = winner_index
+            self.current_trick.clear()
+        else:
+            self.contract = None
+            self.phase = "choosing_trump"
+            self.trump_select_index = self.highest_bid.player_index
+            self.current_trick.clear()
 
     def current_player_to_play(self) -> Player:
         return self.players[self.play_turn_index]
