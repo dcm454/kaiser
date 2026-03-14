@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { JetBrains_Mono, Plus_Jakarta_Sans, Sora } from "next/font/google";
 import "./globals.css";
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://kaiser-caaa4.web.app";
+
 const displayFont = Sora({
   subsets: ["latin"],
   variable: "--font-display",
@@ -21,8 +23,15 @@ const monoFont = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kaiser Web Client",
-  description: "Kaiser multiplayer browser client",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "Play Kaiser Online",
+    template: "%s | Play Kaiser Online",
+  },
+  description: "Play Kaiser online with friends or AI. Learn bidding, scoring, no-trump strategy, and trick-taking rules in this multiplayer browser game.",
+  alternates: {
+    canonical: "/",
+  },
   icons: {
     icon: "/icon.svg",
   },

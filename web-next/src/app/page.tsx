@@ -180,10 +180,24 @@ export default function Page() {
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState<number | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
+  const handSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (currentPhase !== "bidding") setBidNoTrump(false);
   }, [currentPhase]);
+
+  useEffect(() => {
+    if (!(connected && roomReady)) return;
+    if (!["bidding", "playing", "hand_over"].includes(currentPhase)) return;
+    if (typeof window === "undefined") return;
+    if (!window.matchMedia("(max-width: 767px)").matches) return;
+
+    const timer = window.setTimeout(() => {
+      handSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [connected, roomReady, currentPhase, handRevision]);
 
   const isMyTurn = useMemo(() => {
     if (playerIndex === null || !ws) return false;
@@ -744,6 +758,9 @@ export default function Page() {
               <p className="mt-2 text-sm text-soft">
                 The landing screen keeps things simple on phones: connect from the header, then move directly into seat setup.
               </p>
+              <p className="mt-2 text-sm text-soft">
+                Looking for a search-friendly rules page? <a className="underline decoration-emerald-500 underline-offset-2" href="/guide">Read the full Kaiser guide</a>.
+              </p>
             </div>
             <GuideContent />
           </section>
@@ -809,7 +826,6 @@ export default function Page() {
                   disabled={!isHost || !setupRequired || !vp.id}
                 >
                   <p className="text-sm font-semibold">{vp.name} ({displayProfileLabel(vp.profile)})</p>
-                  <p className="mt-1 text-sm text-soft">{vp.bio}</p>
                 </button>
               ))}
             </div>
@@ -921,7 +937,7 @@ export default function Page() {
                   </div>
                 )}
 
-                <div>
+                <div ref={handSectionRef}>
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-base font-semibold">Your Hand</h3>
                     <div className="flex flex-wrap gap-2">
@@ -1028,6 +1044,9 @@ export default function Page() {
 
             <div className="mt-4">
               <GuideContent />
+              <p className="mt-3 text-sm text-emerald-800">
+                Prefer a standalone page? <a className="underline decoration-emerald-500 underline-offset-2" href="/guide">Open the full Kaiser guide</a>.
+              </p>
             </div>
           </section>
         </div>

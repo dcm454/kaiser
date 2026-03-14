@@ -342,6 +342,7 @@ class GameServer:
         self.rooms: Dict[str, GameRoom] = {}
         self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index)
         self.bot_turn_delay_seconds = float(os.environ.get("BOT_TURN_DELAY_SECONDS", "1.2"))
+        self.human_trick_result_pause_seconds = float(os.environ.get("HUMAN_TRICK_RESULT_PAUSE_SECONDS", "2.0"))
     
     def create_room(self, room_id: str) -> GameRoom:
         """Create a new game room."""
@@ -730,6 +731,7 @@ class GameServer:
         action = data.get("action")
         game = room.game
         run_bots_after = False
+        pause_before_bots = False
         player_index = room.get_player_index(websocket)
         if player_index is None:
             raise ValueError("Player is not seated in this room")
@@ -1064,6 +1066,15 @@ class GameServer:
                 })
                 # Update all players' hands
                 await self._send_hands_to_humans(room)
+                # If a human closes a trick and a bot leads next, keep completed trick visible briefly.
+                trick_completed = isinstance(result, str) and "| Trick won by " in result
+                if (
+                    trick_completed
+                    and game.phase == "playing"
+                    and room.is_bot_seat(game.play_turn_index)
+                    and self.human_trick_result_pause_seconds > 0
+                ):
+                    pause_before_bots = True
                 if game.phase == "hand_over":
                     await room.broadcast({
                         "type": "hand_complete",
@@ -1090,6 +1101,8 @@ class GameServer:
                 await websocket.send(json.dumps({"error": f"Unknown action: {action}"}))
 
             if run_bots_after:
+                if pause_before_bots:
+                    await asyncio.sleep(self.human_trick_result_pause_seconds)
                 await self._run_bot_turns(room)
         
         except ValueError as e:

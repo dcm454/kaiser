@@ -53,6 +53,12 @@ echo 'NEXT_PUBLIC_WS_URL=wss://kaiser-server-997088621734.us-central1.run.app/' 
 npm run dev
 ```
 
+For SEO canonical URLs, robots host, and sitemap links, also set your hosted site URL:
+
+```bash
+echo 'NEXT_PUBLIC_SITE_URL=https://kaiser-caaa4.web.app' >> .env.local
+```
+
 Browser client server is fixed to:
 - `wss://kaiser-server-997088621734.us-central1.run.app/`
 
