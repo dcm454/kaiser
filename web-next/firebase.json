@@ -1,6 +1,24 @@
 {
   "hosting": {
     "public": "out",
+    "redirects": [
+      {
+        "source": "/sitemap.xml/",
+        "destination": "/sitemap.xml",
+        "type": 301
+      },
+      {
+        "source": "/guide/",
+        "destination": "/guide",
+        "type": 301
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/guide",
+        "destination": "/guide.html"
+      }
+    ],
     "ignore": [
       "firebase.json",
       "**/.*",
