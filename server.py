@@ -7,12 +7,18 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from dataclasses import asdict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
 from bot_sim import BotPolicy, BotProfile, PRESET_PROFILES
 from kaiser import KaiserGame
+
+try:
+    from google.cloud import firestore
+except ImportError:
+    firestore = None
 
 
 BOT_PERSONAS: List[dict] = [
@@ -56,6 +62,9 @@ class GameRoom:
         self.current_game_winner_recorded: bool = False
         self.new_game_votes: set[int] = set()
         self.last_timeout_refresh_at: float = time.time()
+        self.game_sequence: int = 1
+        self.current_game_id: str = uuid.uuid4().hex
+        self.current_game_started_at: float = time.time()
 
     def _recompute_ready(self) -> None:
         self.ready = (len(self.players) + len(self.bot_policies)) == 4
@@ -191,6 +200,9 @@ class GameRoom:
 
     def restart_game(self) -> None:
         self.game = KaiserGame.new_default()
+        self.game_sequence += 1
+        self.current_game_id = uuid.uuid4().hex
+        self.current_game_started_at = time.time()
         self.current_game_winner_recorded = False
         self.new_game_votes.clear()
         self.mark_timeout_refresh()
@@ -206,6 +218,9 @@ class GameRoom:
     def start_new_game(self) -> None:
         """Start a fresh game with the current seats and setup kept intact."""
         self.game = KaiserGame.new_default()
+        self.game_sequence += 1
+        self.current_game_id = uuid.uuid4().hex
+        self.current_game_started_at = time.time()
         self.current_game_winner_recorded = False
         self.new_game_votes.clear()
         self.mark_timeout_refresh()
@@ -343,6 +358,116 @@ class GameServer:
         self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index)
         self.bot_turn_delay_seconds = float(os.environ.get("BOT_TURN_DELAY_SECONDS", "1.2"))
         self.human_trick_result_pause_seconds = float(os.environ.get("HUMAN_TRICK_RESULT_PAUSE_SECONDS", "2.0"))
+        self.firestore_enabled = os.environ.get("FIRESTORE_ENABLED", "1").lower() not in ("0", "false", "no")
+        self.firestore_collection = os.environ.get("FIRESTORE_GAMES_COLLECTION", "kaiser_game_stats")
+        self.firestore_client = None
+        if self.firestore_enabled and firestore is not None:
+            project_id = os.environ.get("FIRESTORE_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            try:
+                self.firestore_client = firestore.Client(project=project_id) if project_id else firestore.Client()
+            except Exception as exc:
+                print(f"[firestore] Disabled: failed to initialize client: {exc}")
+                self.firestore_client = None
+
+    def _serialize_game_state(self, game: KaiserGame) -> Dict[str, Any]:
+        highest_bid = None
+        if game.highest_bid is not None:
+            highest_bid = {
+                "value": game.highest_bid.value,
+                "trump": game.highest_bid.trump,
+                "player_index": game.highest_bid.player_index,
+            }
+
+        contract = None
+        if game.contract is not None:
+            contract = {
+                "value": game.contract.value,
+                "trump": game.contract.trump,
+                "player_index": game.contract.player_index,
+            }
+
+        return {
+            "phase": game.phase,
+            "dealer_index": game.dealer_index,
+            "bid_turn_index": game.bid_turn_index,
+            "trump_select_index": game.trump_select_index,
+            "play_turn_index": game.play_turn_index,
+            "trick_number": game.trick_number,
+            "team_tricks": {
+                "team0": game.team_tricks[0],
+                "team1": game.team_tricks[1],
+            },
+            "team_points": {
+                "team0": game.team_points[0],
+                "team1": game.team_points[1],
+            },
+            "game_score": {
+                "team0": game.game_score[0],
+                "team1": game.game_score[1],
+            },
+            "no_trump_bid_seen": game.no_trump_bid_seen,
+            "winning_team_index": game.winning_team_index,
+            "highest_bid": highest_bid,
+            "contract": contract,
+            "current_trick": [
+                {
+                    "player_index": player_index,
+                    "card": {
+                        "rank": card.rank,
+                        "suit": card.suit,
+                        "suit_special": card.suit_special,
+                    },
+                }
+                for player_index, card in game.current_trick
+            ],
+            "players": [
+                {
+                    "index": index,
+                    "name": player.name,
+                    "cards_in_hand": len(player.hand),
+                }
+                for index, player in enumerate(game.players)
+            ],
+        }
+
+    async def _persist_room_snapshot(self, room: GameRoom, event_type: str) -> None:
+        if self.firestore_client is None:
+            return
+
+        game = room.game
+        room_payload = room.room_payload().get("room", {})
+        scoreboard = self._scoreboard_payload(game, room).get("scoreboard", {})
+        status = "completed" if game.winning_team_index in (0, 1) else "partial"
+        payload = {
+            "room_id": room.room_id,
+            "game_id": room.current_game_id,
+            "game_sequence": room.game_sequence,
+            "game_started_at_unix": room.current_game_started_at,
+            "last_event": event_type,
+            "status": status,
+            "updated_at_unix": time.time(),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "room": {
+                "humans": room_payload.get("humans", len(room.players)),
+                "bots": room_payload.get("bots", len(room.bot_policies)),
+                "ready": room_payload.get("ready", room.ready),
+                "setup_complete": room_payload.get("setup_complete", room.setup_complete),
+                "host_player_index": room_payload.get("host_player_index", room.host_player_index),
+                "roster": room_payload.get("roster", []),
+            },
+            "scoreboard": scoreboard,
+            "game": self._serialize_game_state(game),
+        }
+
+        doc_id = f"{room.room_id}_{room.current_game_id}"
+
+        def _write() -> None:
+            self.firestore_client.collection(self.firestore_collection).document(doc_id).set(payload, merge=True)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as exc:
+            print(f"[firestore] Failed to write game snapshot for {doc_id}: {exc}")
     
     def create_room(self, room_id: str) -> GameRoom:
         """Create a new game room."""
@@ -522,6 +647,7 @@ class GameServer:
                             **room.room_payload(),
                         }
                     )
+                    await self._persist_room_snapshot(room, "bot_bid_action")
 
                     if game.phase == "choosing_trump":
                         await room.broadcast(
@@ -535,6 +661,7 @@ class GameServer:
                                 **room.room_payload(),
                             }
                         )
+                        await self._persist_room_snapshot(room, "bot_phase_change")
                     if game.phase == "playing":
                         await room.broadcast(
                             {
@@ -547,6 +674,7 @@ class GameServer:
                                 **room.room_payload(),
                             }
                         )
+                        await self._persist_room_snapshot(room, "bot_phase_change")
                     if self.bot_turn_delay_seconds > 0:
                         await asyncio.sleep(self.bot_turn_delay_seconds)
                 elif game.phase == "choosing_trump":
@@ -570,6 +698,7 @@ class GameServer:
                             **room.room_payload(),
                         }
                     )
+                    await self._persist_room_snapshot(room, "bot_choose_trump")
 
                     if game.phase == "playing":
                         await room.broadcast(
@@ -583,6 +712,7 @@ class GameServer:
                                 **room.room_payload(),
                             }
                         )
+                        await self._persist_room_snapshot(room, "bot_phase_change")
                     if self.bot_turn_delay_seconds > 0:
                         await asyncio.sleep(self.bot_turn_delay_seconds)
                 else:
@@ -606,6 +736,7 @@ class GameServer:
                             **room.room_payload(),
                         }
                     )
+                    await self._persist_room_snapshot(room, "bot_play_card")
                     await self._send_hands_to_humans(room)
 
                     if game.phase == "hand_over":
@@ -619,6 +750,7 @@ class GameServer:
                                 **room.room_payload(),
                             }
                         )
+                        await self._persist_room_snapshot(room, "hand_complete")
                         break
                     if self.bot_turn_delay_seconds > 0:
                         await asyncio.sleep(self.bot_turn_delay_seconds)
@@ -632,6 +764,7 @@ class GameServer:
                         **room.room_payload(),
                     }
                 )
+                await self._persist_room_snapshot(room, "bot_action_error")
                 break
     
     async def handle_connection(self, websocket: WebSocketServerProtocol):
@@ -677,6 +810,7 @@ class GameServer:
                 **self._scoreboard_payload(room.game, room),
                 **room.room_payload(),
             }))
+            await self._persist_room_snapshot(room, "player_joined")
             
             # Notify other players
             await room.broadcast({
@@ -725,6 +859,7 @@ class GameServer:
                         **self._scoreboard_payload(room.game, room),
                         **room.room_payload(),
                     })
+                    await self._persist_room_snapshot(room, "player_left")
     
     async def handle_command(self, room: GameRoom, websocket: WebSocketServerProtocol, data: dict):
         """Handle a game command from a player."""
@@ -732,6 +867,7 @@ class GameServer:
         game = room.game
         run_bots_after = False
         pause_before_bots = False
+        persist_after_action = False
         player_index = room.get_player_index(websocket)
         if player_index is None:
             raise ValueError("Player is not seated in this room")
@@ -782,6 +918,7 @@ class GameServer:
                     **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
+                persist_after_action = True
 
                 for seat in sorted(room.players.keys()):
                     await room.send_to_player(
@@ -825,6 +962,7 @@ class GameServer:
                 # Send each player their hand privately
                 await self._send_hands_to_humans(room)
                 run_bots_after = True
+                persist_after_action = True
 
             elif action == "next_hand":
                 if not room.ready:
@@ -845,6 +983,7 @@ class GameServer:
                 })
                 await self._send_hands_to_humans(room)
                 run_bots_after = True
+                persist_after_action = True
 
             elif action == "start_new_game":
                 if game.winning_team_index not in (0, 1):
@@ -879,6 +1018,7 @@ class GameServer:
                         **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
+                persist_after_action = True
 
             elif action == "restart_game":
                 if player_index != room.host_player_index:
@@ -894,6 +1034,7 @@ class GameServer:
                     **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
+                persist_after_action = True
             
             elif action == "hands":
                 hand = game.players[player_index].show_hand()
@@ -945,6 +1086,7 @@ class GameServer:
                         **room.room_payload(),
                     })
                 run_bots_after = True
+                persist_after_action = True
             
             elif action == "pass":
                 require_active_bidder()
@@ -979,6 +1121,7 @@ class GameServer:
                         **room.room_payload(),
                     })
                 run_bots_after = True
+                persist_after_action = True
             
             elif action == "take":
                 require_active_bidder()
@@ -1015,6 +1158,7 @@ class GameServer:
                         **room.room_payload(),
                     })
                 run_bots_after = True
+                persist_after_action = True
 
             elif action == "choose_trump":
                 require_trump_selector()
@@ -1040,6 +1184,7 @@ class GameServer:
                         **room.room_payload(),
                     })
                 run_bots_after = True
+                persist_after_action = True
             
             elif action == "trick":
                 await websocket.send(json.dumps({
@@ -1085,6 +1230,7 @@ class GameServer:
                         **room.room_payload(),
                     })
                 run_bots_after = True
+                persist_after_action = True
             
             elif action == "rotate":
                 new_dealer = game.rotate_dealer()
@@ -1096,9 +1242,13 @@ class GameServer:
                     **self._scoreboard_payload(game, room),
                     **room.room_payload(),
                 })
+                persist_after_action = True
             
             else:
                 await websocket.send(json.dumps({"error": f"Unknown action: {action}"}))
+
+            if persist_after_action:
+                await self._persist_room_snapshot(room, f"human_{action}")
 
             if run_bots_after:
                 if pause_before_bots:

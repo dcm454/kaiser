@@ -181,7 +181,7 @@ gcloud run deploy kaiser-server \
   --platform managed \
   --region us-central1 \
   --timeout=3600 \
-  --set-env-vars=BOT_TURN_DELAY_SECONDS=1.2 \
+  --set-env-vars=BOT_TURN_DELAY_SECONDS=1.2,FIRESTORE_ENABLED=1,FIRESTORE_GAMES_COLLECTION=kaiser_game_stats \
   --allow-unauthenticated
 ```
 
@@ -192,6 +192,23 @@ gcloud run deploy kaiser-server \
 **Note:** Set `--timeout=3600` on deploy/update. Cloud Run WebSocket requests are capped by service timeout (max 60 minutes).
 
 Bot pacing note: set `BOT_TURN_DELAY_SECONDS` to slow/speed virtual player actions (default `1.2`).
+
+### Store game stats in Firestore (partial + completed)
+
+The WebSocket server can continuously persist each room game snapshot to Firestore so in-progress and finished games are both tracked.
+
+- Collection name defaults to `kaiser_game_stats`
+- One Firestore document is used per room game instance
+- `status` is `partial` while a game is in progress, then becomes `completed` once a winner is set
+- Snapshot writes happen on join/leave and on game state changes (deal, bids, plays, hand completion, restart/new game)
+
+Server environment variables:
+
+- `FIRESTORE_ENABLED` (default `1`): set to `0` to disable writes
+- `FIRESTORE_GAMES_COLLECTION` (default `kaiser_game_stats`): target collection name
+- `FIRESTORE_PROJECT_ID` (optional): explicit project id override
+
+If running on Cloud Run, ensure the service account has Firestore write permissions (for example, `roles/datastore.user`).
 
 ### Host browser client on Firebase Hosting (Next.js static export)
 
