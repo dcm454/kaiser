@@ -2,19 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type SetupOption = { id: string; name: string; seat?: number; profile?: string; bio?: string };
+type SetupOption = { id: string; name: string; seat?: number };
 type SetupState = { human_options?: SetupOption[]; bot_options?: SetupOption[]; current_assignments?: (string | null)[] };
 type RoomPayload = {
   room?: {
     ready?: boolean;
     setup_complete?: boolean;
     host_player_index?: number;
-    available_virtual_players?: SetupOption[];
+    host_is_observer?: boolean;
     setup?: SetupState;
   };
 };
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "wss://kaiser-server-997088621734.us-central1.run.app/";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://kaiser-caaa4.web.app";
 const GAME_TIMEOUT_MS = 60 * 60 * 1000;
 
 function extractBidProgressionLines(biddingSummary: string): string[] {
@@ -113,6 +114,7 @@ function GuideContent() {
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
           <li>Enter a game name and your name, then connect.</li>
           <li>The first person in becomes host and assigns seats or AI players.</li>
+          <li>Learning mode: if you are alone, use Watch 4 AI to host as observer and study every trick.</li>
           <li>Before setup is complete, the screen stays focused on the setup table.</li>
           <li>After setup, the game board opens with round status, controls, hand, and log.</li>
           <li>Starting a new game resets the 60-minute timer.</li>
@@ -124,7 +126,7 @@ function GuideContent() {
       <article className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 md:col-span-2">
         <h3 className="font-semibold">History and AI</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-emerald-900">
-          <li>The AI players use predefined strategies with cautious, balanced, aggressive, and chaotic profiles.</li>
+          <li>The AI players each have distinct personalities and adapt to the table as hands unfold.</li>
           <li>Live game logs now include bid strength, hand snapshots, and play reasons for bot turns.</li>
           <li>The interface keeps setup focused first, then expands into the full table once the room is ready.</li>
         </ul>
@@ -138,6 +140,7 @@ export default function Page() {
   const [playerName, setPlayerName] = useState("");
   const [connected, setConnected] = useState(false);
   const [isHost, setIsHost] = useState(false);
+  const [isObserver, setIsObserver] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
   const [roomReady, setRoomReady] = useState(false);
   const [currentPhase, setCurrentPhase] = useState("idle");
@@ -165,7 +168,6 @@ export default function Page() {
   const [cards, setCards] = useState<string[]>([]);
   const [handRevision, setHandRevision] = useState(0);
   const [log, setLog] = useState<string[]>([]);
-  const [virtualPlayers, setVirtualPlayers] = useState<SetupOption[]>([]);
   const [setupInfo, setSetupInfo] = useState<SetupState | null>(null);
   const [setupAssignments, setSetupAssignments] = useState<(string | null)[]>([null, null, null, null]);
   const [contractTrump, setContractTrump] = useState("clubs");
@@ -181,6 +183,41 @@ export default function Page() {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
   const handSectionRef = useRef<HTMLDivElement | null>(null);
+
+  const homeSchema = useMemo(
+    () => ({
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          name: "Play Kaiser Online",
+          url: SITE_URL,
+          description: "Play Kaiser online free with no ads.",
+          potentialAction: {
+            "@type": "SearchAction",
+            target: `${SITE_URL}/guide`,
+            "query-input": "required name=search_term_string",
+          },
+        },
+        {
+          "@type": "Game",
+          name: "Kaiser Online",
+          url: SITE_URL,
+          applicationCategory: "Game",
+          genre: ["Card game", "Trick-taking", "Multiplayer"],
+          playMode: ["MultiPlayer", "SinglePlayer"],
+          description:
+            "Play Kaiser online free with friends or AI. No ads, no downloads, and mobile-friendly gameplay.",
+          offers: {
+            "@type": "Offer",
+            price: "0",
+            priceCurrency: "USD",
+          },
+        },
+      ],
+    }),
+    []
+  );
 
   useEffect(() => {
     if (currentPhase !== "bidding") setBidNoTrump(false);
@@ -240,9 +277,6 @@ export default function Page() {
     if (typeof data.room.setup_complete === "boolean") {
       setSetupRequired(!data.room.setup_complete && effectiveIsHost);
     }
-    if (data.room.available_virtual_players) {
-      setVirtualPlayers(data.room.available_virtual_players);
-    }
     if (data.room.setup) {
       setSetupInfo(data.room.setup);
       if (Array.isArray(data.room.setup.current_assignments) && data.room.setup.current_assignments.length === 4) {
@@ -256,34 +290,8 @@ export default function Page() {
     const human = (setupInfo?.human_options ?? []).find((h) => h.id === assignment);
     if (human) return `${human.name} (human)`;
     const bot = (setupInfo?.bot_options ?? []).find((b) => b.id === assignment);
-    if (bot) return `${bot.name} (${displayProfileLabel(bot.profile)})`;
+    if (bot) return `${bot.name} (AI)`;
     return assignment;
-  };
-
-  const displayProfileLabel = (profile?: string) => {
-    if (!profile) return "unknown";
-    if (profile === "chaotic") return "unpredictable";
-    return profile;
-  };
-
-  const assignBotToNextSeat = (botId: string) => {
-    if (!isHost || !setupRequired) return;
-    const next = [...setupAssignments];
-
-    const existingSeat = next.findIndex((value) => value === botId);
-    if (existingSeat >= 0) {
-      next[existingSeat] = null;
-      setSetupAssignments(next);
-      return;
-    }
-
-    const targetSeat = next.findIndex((value) => value === null);
-    if (targetSeat < 0) {
-      appendLog("All seats already assigned. Change a seat dropdown first.");
-      return;
-    }
-    next[targetSeat] = botId;
-    setSetupAssignments(next);
   };
 
   const renderScoreboard = (data: Record<string, any>) => {
@@ -379,6 +387,10 @@ export default function Page() {
   const connect = () => {
     setJoinRejection(null);
     setHandActionError(null);
+    if (!WS_URL) {
+      setJoinRejection("NEXT_PUBLIC_WS_URL is not configured. Set it in web-next/.env.local, then rebuild or restart the app.");
+      return;
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close();
       setWs(null);
@@ -438,12 +450,23 @@ export default function Page() {
           nextIsHost = data.is_host === true;
           setPlayerIndex(data.player_index);
           setIsHost(nextIsHost);
+          setIsObserver(data.is_observer === true);
           setSetupRequired(data.setup_required === true);
           setJoinRejection(null);
-          appendLog(`Joined game '${data.room_id}' as ${data.player_name} (Seat ${data.player_index + 1}).`);
+          if (typeof data.player_index === "number") {
+            appendLog(`Joined game '${data.room_id}' as ${data.player_name} (Seat ${data.player_index + 1}).`);
+          } else {
+            appendLog(`Joined game '${data.room_id}' as ${data.player_name} (observer).`);
+          }
           break;
         case "player_joined":
-          appendLog(`${data.player_name} joined (Seat ${data.player_index + 1}).`);
+          if (data.is_observer === true) {
+            appendLog(`${data.player_name} joined as observer.`);
+          } else if (typeof data.player_index === "number") {
+            appendLog(`${data.player_name} joined (Seat ${data.player_index + 1}).`);
+          } else {
+            appendLog(`${data.player_name} joined.`);
+          }
           break;
         case "player_left":
           appendLog(`${data.player_name} left.`);
@@ -456,11 +479,22 @@ export default function Page() {
           if (typeof data.player_index === "number") {
             nextPlayerIndex = data.player_index;
             setPlayerIndex(data.player_index);
+            setIsObserver(false);
+          } else if (data.player_index === null) {
+            nextPlayerIndex = null;
+            setPlayerIndex(null);
+            setIsObserver(data.is_observer === true);
           }
           nextIsHost = data.is_host === true;
           setIsHost(nextIsHost);
           setSetupRequired(data.setup_required === true);
-          appendLog(`Seat assignment updated. You are now Seat ${data.player_index + 1}.`);
+          if (typeof data.player_index === "number") {
+            appendLog(`Seat assignment updated. You are now Seat ${data.player_index + 1}.`);
+          } else if (data.is_observer === true) {
+            appendLog("Observer mode enabled. You are now hosting as observer.");
+          } else {
+            appendLog("Seat assignment updated.");
+          }
           break;
         case "hand":
           setCards((data.cards || "").trim() ? data.cards.trim().split(/\s+/) : []);
@@ -565,6 +599,10 @@ export default function Page() {
     send({ action: "setup_game", seat_assignments: values });
   };
 
+  const startObserverMode = () => {
+    send({ action: "setup_observer_mode" });
+  };
+
   const seatDisplay = ["Seat 1 (Team 1)", "Seat 2 (Team 2)", "Seat 3 (Team 1)", "Seat 4 (Team 2)"];
   const isMyBidTurn = turnContext === "bidding";
   const isMyTrumpTurn = turnContext === "choosing_trump" && playerIndex === currentPlayerIndex;
@@ -579,6 +617,7 @@ export default function Page() {
   const showSnapshotTrick = currentPhase !== "bidding" && currentPhase !== "choosing_trump";
   const showSnapshotBid = currentPhase !== "playing" && currentPhase !== "hand_over";
   const showDebugDrawerControl = connected && isHost;
+  const canHostDealAsObserver = isHost && isObserver;
   const remainingTimerMs = gameTimerEndsAt === null ? GAME_TIMEOUT_MS : Math.max(0, gameTimerEndsAt - timerNow);
   const timerMinutes = Math.floor(remainingTimerMs / 60000);
   const timerSeconds = Math.floor((remainingTimerMs % 60000) / 1000);
@@ -621,13 +660,32 @@ export default function Page() {
 
   const cardTone = (card: string) => {
     const suit = card.replace("*", "").slice(-1);
-    if (suit === "♥" || suit === "♦") return "border-emerald-300 bg-emerald-50 text-emerald-900";
-    if (suit === "♣" || suit === "♠") return "border-lime-300 bg-lime-50 text-lime-900";
-    return "border-emerald-200 bg-white text-emerald-900";
+    if (suit === "♥" || suit === "♦") return "border-emerald-300 bg-emerald-50";
+    if (suit === "♣" || suit === "♠") return "border-lime-300 bg-lime-50";
+    return "border-emerald-200 bg-white";
+  };
+
+  const cardInk = (card: string) => {
+    const suit = card.replace("*", "").slice(-1);
+    if (suit === "♥" || suit === "♦") return "text-red-600";
+    return "text-slate-900";
+  };
+
+  const renderSuitColoredLine = (line: string) => {
+    return [...line].map((ch, index) => {
+      if (ch === "♥" || ch === "♦") {
+        return <span key={`${ch}-${index}`} className="text-red-600">{ch}</span>;
+      }
+      if (ch === "♣" || ch === "♠") {
+        return <span key={`${ch}-${index}`} className="text-slate-900">{ch}</span>;
+      }
+      return <span key={`${ch}-${index}`}>{ch}</span>;
+    });
   };
 
   return (
     <main className="relative mx-auto max-w-7xl px-4 pb-8 pt-6 sm:px-6 lg:px-8">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(homeSchema) }} />
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-48 bg-gradient-to-b from-emerald-300/35 to-transparent" />
       <div className="space-y-4">
         <section className="panel animate-enter">
@@ -636,7 +694,7 @@ export default function Page() {
               {!compactPlayingHeader && <p className="text-xs uppercase tracking-[0.24em] text-soft">Realtime Table</p>}
               <h1 className={`${compactPlayingHeader ? "" : "mt-1 "}flex items-center gap-3 text-2xl font-bold tracking-tight sm:text-3xl`}>
                 <EightCardHandIcon />
-                <span>Play Kaiser</span>
+                <span>Play Kaiser Online Free</span>
                 <button
                   className="chip min-h-9 w-10 justify-center border-emerald-300 bg-emerald-100 text-emerald-900 transition hover:bg-emerald-200 md:hidden"
                   onClick={() => setMobileMenuOpen((open) => !open)}
@@ -653,7 +711,7 @@ export default function Page() {
               {compactPlayingHeader ? (
                 <p className="mt-1 text-sm font-medium text-soft">{headerActionText}</p>
               ) : (
-                <p className="mt-1 text-sm text-soft">Fast multiplayer rounds with live bids, play-by-play trick state, and host setup controls.</p>
+                <p className="mt-1 text-sm text-soft">No ads, no downloads. Fast multiplayer rounds with live bids, play-by-play trick state, and host setup controls.</p>
               )}
             </div>
             <div className="flex flex-col items-end gap-2 self-start md:flex-row md:items-center">
@@ -739,7 +797,13 @@ export default function Page() {
             <div className="mt-4 grid gap-3 md:grid-cols-[1fr,1fr,auto]">
               <input className="field" value={gameName} onChange={(e) => setGameName(e.target.value)} placeholder="Game name" />
               <input className="field" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Your name" />
-              <button className="btn-primary" onClick={connect}>Connect</button>
+              <button className="btn-primary" onClick={connect} disabled={!WS_URL}>Connect</button>
+            </div>
+          )}
+
+          {!connected && !WS_URL && (
+            <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+              Missing NEXT_PUBLIC_WS_URL. Set it in web-next/.env.local and restart the frontend.
             </div>
           )}
 
@@ -782,9 +846,31 @@ export default function Page() {
           <section className="panel animate-enter mx-auto w-full max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Game Setup</h2>
-              <span className="text-sm text-soft">
-                {isHost ? (setupRequired ? "You are host. Assign seats and start setup." : "Setup complete.") : "Waiting for host setup..."}
-              </span>
+              {isHost && setupRequired ? (
+                <span className="flex items-center gap-2 text-sm text-soft">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                    aria-hidden="true"
+                  >
+                    <path d="M10 13a5 5 0 0 0 7.54.54l2.92-2.92a5 5 0 0 0-7.07-7.07L11.72 5.2" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54L3.54 13.38a5 5 0 0 0 7.07 7.07l1.67-1.67" />
+                  </svg>
+                  <span>
+                    You are host. Invite others with this link <a className="underline decoration-emerald-500 underline-offset-2" href="https://kaiser-caaa4.web.app/" target="_blank" rel="noreferrer">https://kaiser-caaa4.web.app/</a> and share this game name: <strong>{gameName.trim() || "mygame"}</strong>.
+                  </span>
+                </span>
+              ) : (
+                <span className="text-sm text-soft">
+                  {isHost ? "Setup complete." : "Waiting for host setup..."}
+                </span>
+              )}
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -816,22 +902,11 @@ export default function Page() {
               ))}
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              {virtualPlayers.map((vp) => (
-                <button
-                  key={vp.id ?? vp.name}
-                  type="button"
-                  onClick={() => vp.id && assignBotToNextSeat(vp.id)}
-                  className="info-card text-left transition hover:bg-emerald-50 disabled:opacity-60"
-                  disabled={!isHost || !setupRequired || !vp.id}
-                >
-                  <p className="text-sm font-semibold">{vp.name} ({displayProfileLabel(vp.profile)})</p>
-                </button>
-              ))}
-            </div>
-
             {isHost && setupRequired && (
-              <button className="btn-primary" onClick={sendSetup}>Start Game with Selected Seats</button>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn-primary" onClick={sendSetup}>Start Game with Selected Seats</button>
+                <button className="btn-secondary" onClick={startObserverMode}>Learning Mode: Watch 4 AI</button>
+              </div>
             )}
           </section>
         )}
@@ -843,10 +918,19 @@ export default function Page() {
               <div className="space-y-3">
                 <div className="grid gap-3 md:grid-cols-2">
                   {showSnapshotHand && (
-                    <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}Turn: {turnName}{"\n"}Phase: {phaseLabel}{"\n"}Dealer: {dealerName}{"\n"}Winning Bid: {winningBidSummary}{"\n"}{thisHand}</pre>
+                    <pre className="mono-block whitespace-pre-wrap"><strong>This Hand</strong>{"\n"}{currentPhase !== "playing" ? `Turn: ${turnName}\n` : ""}Phase: {phaseLabel}{"\n"}Dealer: {dealerName}{"\n"}Winning Bid: {winningBidSummary}{"\n"}{thisHand}</pre>
                   )}
                   {showSnapshotTrick && (
-                    <pre className="mono-block whitespace-pre-wrap"><strong>This Trick</strong>{"\n"}{thisTrickText}</pre>
+                    <div className="mono-block whitespace-pre-wrap">
+                      <strong>This Trick</strong>
+                      <div className="mt-2 space-y-0.5">
+                        {`${currentPhase === "playing" ? `Turn: ${turnName}\n` : ""}${thisTrickText}`
+                          .split("\n")
+                          .map((line, index) => (
+                            <div key={`${line}-${index}`}>{renderSuitColoredLine(line)}</div>
+                          ))}
+                      </div>
+                    </div>
                   )}
                 </div>
                 {showSnapshotBid && (
@@ -871,6 +955,9 @@ export default function Page() {
               <section className="panel animate-enter space-y-4">
                 <div className="flex flex-wrap gap-2">
                   {currentPhase === "idle" && dealerIndex === playerIndex && (
+                    <button className="btn-primary" onClick={() => send({ action: "deal" })}>Deal</button>
+                  )}
+                  {currentPhase === "idle" && canHostDealAsObserver && (
                     <button className="btn-primary" onClick={() => send({ action: "deal" })}>Deal</button>
                   )}
                 </div>
@@ -987,7 +1074,7 @@ export default function Page() {
                           if (token) send({ action: "play", card: token });
                         }}
                       >
-                        {card}
+                        <span className={cardInk(card)}>{card}</span>
                       </button>
                     ))}
                   </div>

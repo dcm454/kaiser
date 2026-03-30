@@ -3,25 +3,25 @@ import type { Metadata } from "next";
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://kaiser-caaa4.web.app";
 
 export const metadata: Metadata = {
-  title: "Kaiser Game Guide and Rules",
+  title: "Kaiser Game Guide and Rules | Play Free, No Ads",
   description:
-    "Learn how to play Kaiser online: bidding, trump and no-trump contracts, trick scoring, and multiplayer setup.",
+    "Learn how to play Kaiser online free with no ads: bidding, trump and no-trump contracts, trick scoring, and multiplayer setup.",
   alternates: {
     canonical: "/guide",
   },
   openGraph: {
-    title: "Kaiser Game Guide and Rules",
+    title: "Kaiser Game Guide and Rules | Play Free, No Ads",
     description:
-      "Step-by-step guide to play Kaiser online, including bidding and no-trump strategy.",
+      "Step-by-step guide to play Kaiser online free with no ads, including bidding and no-trump strategy.",
     url: `${siteUrl}/guide`,
     siteName: "Play Kaiser Online",
     type: "article",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Kaiser Game Guide and Rules",
+    title: "Kaiser Game Guide and Rules | Play Free, No Ads",
     description:
-      "Learn the rules and strategy for playing Kaiser online with friends or AI.",
+      "Learn the rules and strategy for playing Kaiser online free with friends or AI. No ads.",
   },
 };
 
@@ -56,7 +56,56 @@ const faqSchema = {
           "The game target starts at 52 and changes to 64 only after a successful no-trump contract.",
       },
     },
+    {
+      "@type": "Question",
+      name: "Can I learn Kaiser by watching AI players?",
+      acceptedAnswer: {
+        "@type": "Answer",
+        text:
+          "Yes. The host can start Learning Mode and watch a full 4-AI table as an observer, then use Start Next Hand or Start New Game to keep studying decisions.",
+      },
+    },
   ],
+};
+
+const guideHowToSchema = {
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  name: "How to play Kaiser online free",
+  description: "Start a Kaiser room, set seats, and play online with no ads.",
+  totalTime: "PT2M",
+  step: [
+    {
+      "@type": "HowToStep",
+      name: "Open the game lobby",
+      text: "Open the Kaiser game page and enter a game name and player name.",
+    },
+    {
+      "@type": "HowToStep",
+      name: "Configure seats",
+      text: "Host assigns seats to humans or AI, or starts Learning Mode to watch four AI players.",
+    },
+    {
+      "@type": "HowToStep",
+      name: "Play bidding and tricks",
+      text: "Deal cards, complete bidding, choose trump, and play tricks while following suit.",
+    },
+  ],
+};
+
+const guideGameSchema = {
+  "@context": "https://schema.org",
+  "@type": "Game",
+  name: "Kaiser Online",
+  url: siteUrl,
+  genre: ["Card game", "Trick-taking"],
+  playMode: ["MultiPlayer", "SinglePlayer"],
+  description: "Play Kaiser online free with no ads, with friends or AI players.",
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+  },
 };
 
 type Suit = "clubs" | "diamonds" | "hearts" | "spades";
@@ -80,12 +129,14 @@ export default function GuidePage() {
   return (
     <main className="mx-auto w-full max-w-4xl space-y-6 px-4 py-8 text-emerald-950 sm:px-6">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(guideHowToSchema) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(guideGameSchema) }} />
 
       <header className="space-y-2">
         <p className="text-xs uppercase tracking-[0.2em] text-soft">Kaiser Card Game</p>
         <h1 className="text-3xl font-semibold sm:text-4xl">Play Kaiser Online: Rules, Setup, and Strategy</h1>
         <p className="text-sm text-soft sm:text-base">
-          Learn how to play Kaiser online with live multiplayer rooms, AI seats, bidding strategy, and scoring rules.
+          Learn how to play Kaiser online free with no ads, using live multiplayer rooms, AI seats, bidding strategy, and scoring rules.
         </p>
       </header>
 
@@ -95,10 +146,21 @@ export default function GuidePage() {
           <li>Open the game lobby and enter a game name and player name.</li>
           <li>The first person connected becomes host.</li>
           <li>Share the Game Name with other players to join the room and then assign the seats.</li>
+          <li>If you are solo, choose Learning Mode: Watch 4 AI to host as observer and study full-table play.</li>
           <li>Dealer deals 8 cards each, then bidding begins.</li>
           <li>Winning bid sets the contract value; no-trump can be declared during bidding.</li>
           <li>Play tricks in turn and follow lead suit when possible.</li>
         </ol>
+      </section>
+
+      <section className="info-card space-y-3">
+        <h2 className="text-xl font-semibold">Learning Mode: Watch 4 AI</h2>
+        <ul className="list-disc space-y-2 pl-5 text-sm sm:text-base">
+          <li>Start a room alone, then pick Learning Mode in setup.</li>
+          <li>Your role becomes host observer, and all four seats are filled with AI players.</li>
+          <li>Use the live snapshot and debug log to review bids, trump choices, and trick play in real time.</li>
+          <li>At hand end, use Start Next Hand to keep the same game or Start New Game after a winner is declared.</li>
+        </ul>
       </section>
 
       <section className="info-card space-y-3">

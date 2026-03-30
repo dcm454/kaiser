@@ -32,13 +32,14 @@ pip install websockets
 python3 server.py
 ```
 
-**2. Open the browser client (recommended):**
-- Open `web/index.html` (or your hosted static URL)
+**2. Open the supported browser client (`web-next/`):**
+- Set `NEXT_PUBLIC_WS_URL` to your current Cloud Run WebSocket URL
+- Run the Next.js frontend locally or deploy it to Firebase Hosting
 - Enter game name and your name, then connect (default game name: `mygame`)
 - The first person to connect becomes host and sees a setup screen
 - Host assigns Seat 1-4 (Team 1/Team 2 positions) to connected people and/or virtual players, then starts setup
 
-`client.py` multiplayer usage is now deprecated in favor of the browser client flow.
+`client.py` multiplayer usage is deprecated. `web-next/` is the only supported browser client.
 
 ### Browser client (no installs for players)
 
@@ -49,7 +50,7 @@ Quick start:
 ```bash
 cd web-next
 npm install
-echo 'NEXT_PUBLIC_WS_URL=wss://kaiser-server-997088621734.us-central1.run.app/' > .env.local
+echo 'NEXT_PUBLIC_WS_URL=wss://kaiser-server-tnqc3l4b5q-uc.a.run.app/' > .env.local
 npm run dev
 ```
 
@@ -59,8 +60,10 @@ For SEO canonical URLs, robots host, and sitemap links, also set your hosted sit
 echo 'NEXT_PUBLIC_SITE_URL=https://kaiser-caaa4.web.app' >> .env.local
 ```
 
-Browser client server is fixed to:
-- `wss://kaiser-server-997088621734.us-central1.run.app/`
+The browser client has no default backend. You must set `NEXT_PUBLIC_WS_URL` to the current Cloud Run WebSocket backend at build time:
+- `wss://kaiser-server-tnqc3l4b5q-uc.a.run.app/`
+
+Important: `NEXT_PUBLIC_WS_URL` is required in all environments and is baked into the frontend when you run `npm run build`. If the Cloud Run URL changes, update `.env.local`, rebuild `web-next/`, and redeploy hosting before testing again.
 
 The browser client supports the same multiplayer actions: deal, state, bidding, bid, pass, take, trick, play, rotate, restart_game.
 The first connected player becomes host and configures virtual players before gameplay.
@@ -74,16 +77,6 @@ It also includes a live scoreboard panel showing:
 - Turn display:
   - `Turn: Dealer - <name>` during idle/hand-over phases
   - `Turn: <name>` during bidding/playing phases
-
-Virtual players available in setup:
-- `Anne` (balanced)
-- `Lillian` (cautious)
-- `Nelson` (unpredictable)
-- `Edward` (aggressive)
-
-Note: the underlying simulation/CLI profile key for Nelson remains `chaotic` for compatibility.
-
-Each virtual player has an in-client bio describing play style and table personality.
 
 ### Bot simulation (4 automated players)
 
@@ -178,6 +171,7 @@ Important: run Cloud Run deploy from the repo root (`kaiser/`), not from `web-ne
 cd /path/to/kaiser
 gcloud run deploy kaiser-server \
   --source . \
+  --service-account=kaiser-server@kaiser-caaa4.iam.gserviceaccount.com \
   --platform managed \
   --region us-central1 \
   --timeout=3600 \
@@ -185,9 +179,23 @@ gcloud run deploy kaiser-server \
   --allow-unauthenticated
 ```
 
-3. Note the service URL (e.g., `https://kaiser-server-xxx.run.app`)
+3. Note the service URL (current example: `https://kaiser-server-tnqc3l4b5q-uc.a.run.app`)
 
-4. Players open your hosted browser page and connect there (game name + name, default game name `mygame`).
+4. Sync the frontend WebSocket URL to that exact Cloud Run service URL:
+```bash
+cd /path/to/kaiser/web-next
+echo 'NEXT_PUBLIC_WS_URL=wss://kaiser-server-tnqc3l4b5q-uc.a.run.app/' > .env.local
+echo 'NEXT_PUBLIC_SITE_URL=https://kaiser-caaa4.web.app' >> .env.local
+npm install
+npm run build
+firebase deploy --only hosting
+```
+
+Important: the frontend will keep using the old backend until it is rebuilt and redeployed with the updated `NEXT_PUBLIC_WS_URL`.
+
+If `NEXT_PUBLIC_WS_URL` is missing, the Next.js client will not connect.
+
+5. Players open your hosted browser page and connect there (game name + name, default game name `mygame`).
 
 **Note:** Set `--timeout=3600` on deploy/update. Cloud Run WebSocket requests are capped by service timeout (max 60 minutes).
 
@@ -201,6 +209,16 @@ The WebSocket server can continuously persist each room game snapshot to Firesto
 - One Firestore document is used per room game instance
 - `status` is `partial` while a game is in progress, then becomes `completed` once a winner is set
 - Snapshot writes happen on join/leave and on game state changes (deal, bids, plays, hand completion, restart/new game)
+- Stored fields are intentionally minimal:
+  - `game_id`
+  - `game_started`
+  - `last_event`
+  - `status`
+  - `score` (team0/team1)
+  - `players` (player names)
+  - `points` (team0/team1)
+  - `tricks` (team0/team1)
+  - timestamps (`updated_at_unix`, `updated_at`)
 
 Server environment variables:
 
@@ -319,9 +337,7 @@ Card token format:
 - `client.py` - Multiplayer CLI client (connects to server)
 - `bot_sim.py` - 4-bot automated simulation runner with configurable profiles + decision logs
 - `bot_analyze.py` - Summary analyzer for `bot_sim.py` JSONL decision logs
-- `web-next/` - Next.js + React + Tailwind browser client (Firebase hosting target)
-- `web/index.html` - Legacy static browser UI
-- `web/app.js` - Legacy static browser client WebSocket logic
+- `web-next/` - Supported Next.js + React + Tailwind browser client (Firebase hosting target)
 - `Dockerfile` - Container definition for Cloud Run deployment
 - `requirements.txt` - Python dependencies
 

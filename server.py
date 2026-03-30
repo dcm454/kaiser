@@ -9,7 +9,7 @@ import os
 import time
 import uuid
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
 from bot_sim import BotPolicy, BotProfile, PRESET_PROFILES
@@ -53,9 +53,11 @@ class GameRoom:
         self.game = KaiserGame.new_default()
         self.players: Dict[int, WebSocketServerProtocol] = {}  # player_index -> websocket
         self.player_names: Dict[int, str] = {}  # player_index -> name
+        self.observers: Dict[WebSocketServerProtocol, str] = {}  # websocket -> observer name
         self.bot_policies: Dict[int, BotPolicy] = {}  # player_index -> policy
         self.bot_personas: Dict[int, dict] = {}  # player_index -> persona metadata
         self.host_player_index: Optional[int] = None
+        self.host_observer_ws: Optional[WebSocketServerProtocol] = None
         self.setup_complete: bool = False
         self.ready = False
         self.session_wins: List[int] = [0, 0]
@@ -68,6 +70,9 @@ class GameRoom:
 
     def _recompute_ready(self) -> None:
         self.ready = (len(self.players) + len(self.bot_policies)) == 4
+
+    def is_observer(self, ws: WebSocketServerProtocol) -> bool:
+        return ws in self.observers
 
     def mark_timeout_refresh(self) -> None:
         # Any explicit user action updates this marker so clients can display that keepalive activity happened.
@@ -93,8 +98,6 @@ class GameRoom:
             {
                 "id": f"bot:{persona['name']}",
                 "name": persona["name"],
-                "profile": persona["profile"],
-                "bio": persona["bio"],
             }
             for persona in BOT_PERSONAS
         ]
@@ -115,6 +118,26 @@ class GameRoom:
                 "current_assignments": current_assignments,
             }
         }
+
+    def enable_observer_learning_mode(self, host_ws: WebSocketServerProtocol) -> List[dict]:
+        if self.setup_complete:
+            raise ValueError("Game setup is already complete")
+        if self.host_player_index is None:
+            raise ValueError("Observer mode requires an active host")
+        if len(self.players) != 1:
+            raise ValueError("Observer mode can only start when you are the only connected human")
+        if host_ws != self.players.get(self.host_player_index):
+            raise ValueError("Only the host can enable observer mode")
+
+        host_name = self.player_names.get(self.host_player_index, "Host")
+        del self.players[self.host_player_index]
+        del self.player_names[self.host_player_index]
+        self.observers[host_ws] = host_name
+        self.host_observer_ws = host_ws
+        self.host_player_index = None
+
+        assignments = [f"bot:{persona['name']}" for persona in BOT_PERSONAS]
+        return self.apply_setup_assignments(assignments)
 
     def apply_setup_assignments(self, seat_assignments: List[str]) -> List[dict]:
         if len(seat_assignments) != 4:
@@ -172,6 +195,8 @@ class GameRoom:
                 if ws == host_ws:
                     self.host_player_index = seat
                     break
+        elif self.host_observer_ws is None:
+            self.host_player_index = None
         if self.host_player_index is None and self.players:
             self.host_player_index = min(self.players.keys())
 
@@ -277,12 +302,20 @@ class GameRoom:
         return {
             "room": {
                 "humans": len(self.players),
+                "observers": len(self.observers),
                 "bots": len(self.bot_policies),
                 "ready": self.ready,
                 "setup_complete": self.setup_complete,
                 "host_player_index": self.host_player_index,
+                "host_is_observer": self.host_observer_ws is not None,
                 "roster": roster,
-                "available_virtual_players": BOT_PERSONAS,
+                "available_virtual_players": [
+                    {
+                        "id": f"bot:{persona['name']}",
+                        "name": persona["name"],
+                    }
+                    for persona in BOT_PERSONAS
+                ],
                 **self.setup_options_payload(),
             }
         }
@@ -299,6 +332,17 @@ class GameRoom:
                 self._recompute_ready()
                 return i
         return None
+
+    def add_observer(self, ws: WebSocketServerProtocol, name: str, is_host: bool = False) -> None:
+        self.observers[ws] = name
+        if is_host:
+            self.host_observer_ws = ws
+
+    def remove_observer(self, ws: WebSocketServerProtocol) -> Optional[str]:
+        name = self.observers.pop(ws, None)
+        if self.host_observer_ws == ws:
+            self.host_observer_ws = None
+        return name
     
     def remove_player(self, ws: WebSocketServerProtocol) -> Optional[int]:
         """Remove a player from the room. Returns their index or None."""
@@ -330,6 +374,15 @@ class GameRoom:
                     await ws.send(json.dumps(message))
                 except:
                     disconnected.append(idx)
+
+        disconnected_observers: List[WebSocketServerProtocol] = []
+        for ws in list(self.observers.keys()):
+            if ws == exclude:
+                continue
+            try:
+                await ws.send(json.dumps(message))
+            except:
+                disconnected_observers.append(ws)
         
         # Clean up disconnected players
         for idx in disconnected:
@@ -340,6 +393,9 @@ class GameRoom:
             if self.host_player_index == idx:
                 self.host_player_index = min(self.players.keys()) if self.players else None
             self._recompute_ready()
+
+        for ws in disconnected_observers:
+            self.remove_observer(ws)
     
     async def send_to_player(self, player_index: int, message: dict):
         """Send a message to a specific player."""
@@ -355,7 +411,7 @@ class GameServer:
     
     def __init__(self):
         self.rooms: Dict[str, GameRoom] = {}
-        self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index)
+        self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index or None)
         self.bot_turn_delay_seconds = float(os.environ.get("BOT_TURN_DELAY_SECONDS", "1.2"))
         self.human_trick_result_pause_seconds = float(os.environ.get("HUMAN_TRICK_RESULT_PAUSE_SECONDS", "2.0"))
         self.firestore_enabled = os.environ.get("FIRESTORE_ENABLED", "1").lower() not in ("0", "false", "no")
@@ -369,94 +425,32 @@ class GameServer:
                 print(f"[firestore] Disabled: failed to initialize client: {exc}")
                 self.firestore_client = None
 
-    def _serialize_game_state(self, game: KaiserGame) -> Dict[str, Any]:
-        highest_bid = None
-        if game.highest_bid is not None:
-            highest_bid = {
-                "value": game.highest_bid.value,
-                "trump": game.highest_bid.trump,
-                "player_index": game.highest_bid.player_index,
-            }
-
-        contract = None
-        if game.contract is not None:
-            contract = {
-                "value": game.contract.value,
-                "trump": game.contract.trump,
-                "player_index": game.contract.player_index,
-            }
-
-        return {
-            "phase": game.phase,
-            "dealer_index": game.dealer_index,
-            "bid_turn_index": game.bid_turn_index,
-            "trump_select_index": game.trump_select_index,
-            "play_turn_index": game.play_turn_index,
-            "trick_number": game.trick_number,
-            "team_tricks": {
-                "team0": game.team_tricks[0],
-                "team1": game.team_tricks[1],
-            },
-            "team_points": {
-                "team0": game.team_points[0],
-                "team1": game.team_points[1],
-            },
-            "game_score": {
-                "team0": game.game_score[0],
-                "team1": game.game_score[1],
-            },
-            "no_trump_bid_seen": game.no_trump_bid_seen,
-            "winning_team_index": game.winning_team_index,
-            "highest_bid": highest_bid,
-            "contract": contract,
-            "current_trick": [
-                {
-                    "player_index": player_index,
-                    "card": {
-                        "rank": card.rank,
-                        "suit": card.suit,
-                        "suit_special": card.suit_special,
-                    },
-                }
-                for player_index, card in game.current_trick
-            ],
-            "players": [
-                {
-                    "index": index,
-                    "name": player.name,
-                    "cards_in_hand": len(player.hand),
-                }
-                for index, player in enumerate(game.players)
-            ],
-        }
-
     async def _persist_room_snapshot(self, room: GameRoom, event_type: str) -> None:
         if self.firestore_client is None:
             return
 
         game = room.game
-        room_payload = room.room_payload().get("room", {})
-        scoreboard = self._scoreboard_payload(game, room).get("scoreboard", {})
         status = "completed" if game.winning_team_index in (0, 1) else "partial"
         payload = {
-            "room_id": room.room_id,
             "game_id": room.current_game_id,
-            "game_sequence": room.game_sequence,
-            "game_started_at_unix": room.current_game_started_at,
+            "game_started": room.current_game_started_at,
             "last_event": event_type,
             "status": status,
+            "score": {
+                "team0": game.game_score[0],
+                "team1": game.game_score[1],
+            },
+            "players": [player.name for player in game.players],
+            "points": {
+                "team0": game.team_points[0],
+                "team1": game.team_points[1],
+            },
+            "tricks": {
+                "team0": game.team_tricks[0],
+                "team1": game.team_tricks[1],
+            },
             "updated_at_unix": time.time(),
             "updated_at": firestore.SERVER_TIMESTAMP,
-            "room": {
-                "humans": room_payload.get("humans", len(room.players)),
-                "bots": room_payload.get("bots", len(room.bot_policies)),
-                "ready": room_payload.get("ready", room.ready),
-                "setup_complete": room_payload.get("setup_complete", room.setup_complete),
-                "host_player_index": room_payload.get("host_player_index", room.host_player_index),
-                "roster": room_payload.get("roster", []),
-            },
-            "scoreboard": scoreboard,
-            "game": self._serialize_game_state(game),
         }
 
         doc_id = f"{room.room_id}_{room.current_game_id}"
@@ -536,7 +530,7 @@ class GameServer:
         winner_exists = game.winning_team_index in (0, 1)
         new_game_votes = len(room.new_game_votes) if room is not None else 0
         new_game_required_votes = room.required_new_game_votes() if room is not None else 0
-        new_game_ready = new_game_required_votes > 0 and new_game_votes >= new_game_required_votes
+        new_game_ready = (new_game_required_votes == 0) or (new_game_votes >= new_game_required_votes)
         return {
             "scoreboard": {
                 "phase": game.phase,
@@ -789,8 +783,9 @@ class GameServer:
             if not room:
                 room = self.create_room(room_id)
             
-            # Add player to room
+            # Add player to room. Observer mode is single-host-only and does not allow extra spectators.
             player_index = room.add_player(websocket, player_name)
+            is_observer = False
             if player_index is None:
                 await websocket.send(json.dumps({"error": "Room is full"}))
                 return
@@ -804,8 +799,12 @@ class GameServer:
                 "player_index": player_index,
                 "player_name": player_name,
                 "players_count": len(room.players),
-                "is_host": player_index == room.host_player_index,
-                "setup_required": (player_index == room.host_player_index and not room.setup_complete),
+                "is_host": (player_index is not None and player_index == room.host_player_index) or (is_observer and websocket == room.host_observer_ws),
+                "is_observer": is_observer,
+                "setup_required": (
+                    ((player_index is not None and player_index == room.host_player_index) or (is_observer and websocket == room.host_observer_ws))
+                    and not room.setup_complete
+                ),
                 **self._turn_payload(room.game),
                 **self._scoreboard_payload(room.game, room),
                 **room.room_payload(),
@@ -817,6 +816,7 @@ class GameServer:
                 "type": "player_joined",
                 "player_name": player_name,
                 "player_index": player_index,
+                "is_observer": is_observer,
                 "players_count": len(room.players),
                 "ready": room.ready,
                 **self._turn_payload(room.game),
@@ -845,15 +845,19 @@ class GameServer:
                 room = self.get_room(room_id)
                 if room:
                     current_index = room.get_player_index(websocket)
-                    player_name = room.player_names.get(current_index, "Unknown") if current_index is not None else "Unknown"
-                    room.remove_player(websocket)
+                    if current_index is not None:
+                        player_name = room.player_names.get(current_index, "Unknown")
+                        room.remove_player(websocket)
+                    else:
+                        player_name = room.remove_observer(websocket) or "Unknown"
                     
                     # Notify remaining players
                     await room.broadcast({
                         "type": "player_left",
                         "player_name": player_name,
-                        "player_index": player_index,
+                        "player_index": current_index,
                         "players_count": len(room.players),
+                        "observers_count": len(room.observers),
                         "ready": room.ready,
                         **self._turn_payload(room.game),
                         **self._scoreboard_payload(room.game, room),
@@ -868,8 +872,9 @@ class GameServer:
         run_bots_after = False
         pause_before_bots = False
         persist_after_action = False
+        is_host_observer = room.host_observer_ws == websocket
         player_index = room.get_player_index(websocket)
-        if player_index is None:
+        if player_index is None and not is_host_observer:
             raise ValueError("Player is not seated in this room")
 
         def require_active_bidder() -> None:
@@ -934,6 +939,32 @@ class GameServer:
                         },
                     )
 
+            elif action == "setup_observer_mode":
+                if player_index != room.host_player_index:
+                    raise ValueError("Only the first connected player can enable observer mode")
+                added = room.enable_observer_learning_mode(websocket)
+                game = room.game
+                added_names = ", ".join(bot["name"] for bot in added) if added else "none"
+                await room.broadcast({
+                    "type": "setup_complete",
+                    "message": f"Observer mode ready. Watching AI table: {added_names}.",
+                    "added_bots": added,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game, room),
+                    **room.room_payload(),
+                })
+                await websocket.send(json.dumps({
+                    "type": "seat_assigned",
+                    "player_index": None,
+                    "is_host": True,
+                    "is_observer": True,
+                    "setup_required": False,
+                    **self._turn_payload(game),
+                    **self._scoreboard_payload(game, room),
+                    **room.room_payload(),
+                }))
+                persist_after_action = True
+
             elif action == "state":
                 await websocket.send(json.dumps({
                     "type": "state",
@@ -946,7 +977,7 @@ class GameServer:
             elif action == "deal":
                 if not room.ready:
                     raise ValueError("Need 4 players to start")
-                if player_index != game.dealer_index:
+                if not is_host_observer and player_index != game.dealer_index:
                     dealer_name = game.players[game.dealer_index].name
                     raise ValueError(f"Only the dealer can deal. Current dealer: {dealer_name}")
                 game.deal_new_hand()
@@ -969,6 +1000,10 @@ class GameServer:
                     raise ValueError("Need 4 players to start")
                 if game.phase != "hand_over":
                     raise ValueError("Next hand can only be started after a hand is complete")
+                if not is_host_observer:
+                    if player_index != game.dealer_index:
+                        dealer_name = game.players[game.dealer_index].name
+                        raise ValueError(f"Only the dealer can start the next hand. Current dealer: {dealer_name}")
 
                 new_dealer = game.rotate_dealer()
                 game.deal_new_hand()
@@ -989,28 +1024,12 @@ class GameServer:
                 if game.winning_team_index not in (0, 1):
                     raise ValueError("New game can only be started after a winner is determined")
 
-                room.register_new_game_vote(player_index)
-                votes = len(room.new_game_votes)
-                required_votes = room.required_new_game_votes()
-                await room.broadcast({
-                    "type": "new_game_vote",
-                    "message": f"{game.players[player_index].name} is ready for a new game ({votes}/{required_votes}).",
-                    "new_game": {
-                        "votes": votes,
-                        "required_votes": required_votes,
-                        "timeout_refreshed_at": room.last_timeout_refresh_at,
-                    },
-                    **self._turn_payload(game),
-                    **self._scoreboard_payload(game, room),
-                    **room.room_payload(),
-                })
-
-                if required_votes > 0 and votes >= required_votes:
+                if is_host_observer and room.required_new_game_votes() == 0:
                     room.start_new_game()
                     game = room.game
                     await room.broadcast({
                         "type": "new_game_started",
-                        "message": "All players confirmed. New game is ready. Dealer can deal.",
+                        "message": "Observer host started a new AI game.",
                         "state": game.state_summary(),
                         "phase": game.phase,
                         "timeout_refreshed_at": room.last_timeout_refresh_at,
@@ -1018,10 +1037,41 @@ class GameServer:
                         **self._scoreboard_payload(game, room),
                         **room.room_payload(),
                     })
-                persist_after_action = True
+                    persist_after_action = True
+                else:
+                    room.register_new_game_vote(player_index)
+                    votes = len(room.new_game_votes)
+                    required_votes = room.required_new_game_votes()
+                    await room.broadcast({
+                        "type": "new_game_vote",
+                        "message": f"{game.players[player_index].name} is ready for a new game ({votes}/{required_votes}).",
+                        "new_game": {
+                            "votes": votes,
+                            "required_votes": required_votes,
+                            "timeout_refreshed_at": room.last_timeout_refresh_at,
+                        },
+                        **self._turn_payload(game),
+                        **self._scoreboard_payload(game, room),
+                        **room.room_payload(),
+                    })
+
+                    if required_votes > 0 and votes >= required_votes:
+                        room.start_new_game()
+                        game = room.game
+                        await room.broadcast({
+                            "type": "new_game_started",
+                            "message": "All players confirmed. New game is ready. Dealer can deal.",
+                            "state": game.state_summary(),
+                            "phase": game.phase,
+                            "timeout_refreshed_at": room.last_timeout_refresh_at,
+                            **self._turn_payload(game),
+                            **self._scoreboard_payload(game, room),
+                            **room.room_payload(),
+                        })
+                    persist_after_action = True
 
             elif action == "restart_game":
-                if player_index != room.host_player_index:
+                if not ((player_index is not None and player_index == room.host_player_index) or is_host_observer):
                     raise ValueError("Only the host can restart the game")
                 room.restart_game()
                 game = room.game
