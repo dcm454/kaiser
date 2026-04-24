@@ -1001,9 +1001,8 @@ class GameServer:
                 if game.phase != "hand_over":
                     raise ValueError("Next hand can only be started after a hand is complete")
                 if not is_host_observer:
-                    if player_index != game.dealer_index:
-                        dealer_name = game.players[game.dealer_index].name
-                        raise ValueError(f"Only the dealer can start the next hand. Current dealer: {dealer_name}")
+                    if player_index not in room.players:
+                        raise ValueError("Only seated human players can start the next hand")
 
                 new_dealer = game.rotate_dealer()
                 game.deal_new_hand()

@@ -117,6 +117,7 @@ function GuideContent() {
           <li>Learning mode: if you are alone, use Watch 4 AI to host as observer and study every trick.</li>
           <li>Before setup is complete, the screen stays focused on the setup table.</li>
           <li>After setup, the game board opens with round status, controls, hand, and log.</li>
+          <li>When a hand ends, any seated human can press Start Next Hand (dealer rotates automatically).</li>
           <li>Starting a new game resets the 60-minute timer.</li>
           <li>Use Playing Guide anytime to reopen these notes.</li>
           <li>On a phone, the layout stacks in play order so the hand stays easy to reach.</li>

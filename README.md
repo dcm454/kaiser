@@ -127,6 +127,14 @@ Useful no-trump tuning fields for overrides:
 - `no_trump_bias`: global multiplier for the dedicated no-trump evaluator
 - `no_trump_bid_margin`: how far no-trump must beat the best suit strength before a bot bids no-trump
 - `no_trump_take_margin`: how far no-trump must beat the best suit strength before a dealer take becomes no-trump
+- `no_trump_bid_discount`: subtracts from projected no-trump bid value for safer contracts
+- `no_trump_take_discount`: subtracts from projected no-trump dealer-take support value
+- `no_trump_overcall_buffer`: minimum no-trump edge over current high bid before bot commits
+
+Useful no-trump play fields for overrides:
+- `nt_cash_top_bias`: how strongly no-trump declarer side favors cashing top winners from its best suit
+- `nt_entry_preserve_bias`: how strongly no-trump declarer side avoids overtaking partner winners/entries
+- `nt_duck_bias`: how strongly no-trump defenders prefer ducking to partner winners when possible
 
 Decision log output is JSONL (`bot_decisions.jsonl`) with per-decision context (`hand`, `trick`, `phase`, `player`, `action`, `payload`, `reason`) for analysis.
 
@@ -149,6 +157,41 @@ python3 bot_analyze.py --log-file bot_decisions.jsonl --json --out summary.json
 ```
 
 The analyzer prints: final score/winner, action and phase counts, per-player stats, and contract success by profile.
+
+### Play-only no-trump tuning harness
+
+If bidding/contract settings are already stable and you only want to tune play behavior for no-trump outcomes, use:
+
+```bash
+python3 tune_no_trump_play.py \
+  --profiles balanced,aggressive,cautious,chaotic \
+  --base-overrides bot_overrides.json \
+  --sweep-knobs nt \
+  --hands 150 \
+  --seed-start 1 \
+  --seed-count 20
+```
+
+What it does:
+- Keeps bidding/contract parameters fixed from `--profiles` + optional `--base-overrides`
+- Sweeps play knobs by mode:
+  - `--sweep-knobs legacy`: `lead_high_bias`, `trump_spend_bias`, `random_play_jitter`
+  - `--sweep-knobs nt`: `nt_cash_top_bias`, `nt_entry_preserve_bias`, `nt_duck_bias`
+  - `--sweep-knobs all`: both legacy and NT knob groups
+- Runs paired mirrored matches vs baseline (candidate on Team 0 and Team 1) for fairness
+- Ranks candidates primarily by no-trump make rate for tuned seats
+
+Outputs:
+- `nt_play_tuning_results.json` full ranked results
+- `nt_play_tuning_leaderboard.csv` sortable leaderboard
+
+Useful knobs:
+- `--lead-high-values 0.2,0.4,0.6,0.8`
+- `--trump-spend-values 0.2,0.4,0.6,0.8`
+- `--jitter-values 0.0,0.05,0.1,0.2`
+- `--nt-cash-values 0.6,0.75,0.9`
+- `--nt-entry-values 0.4,0.6,0.8`
+- `--nt-duck-values 0.1,0.25,0.4`
 
 ### Deploy to Google Cloud Run
 
@@ -286,11 +329,13 @@ Browser client behavior:
 - First connected player is host and runs game setup
 - Host can assign teams by seat and choose which seats are people vs virtual players
 - Only the active dealer can `deal` when setup is complete
+- After a hand completes, any seated human can start the next hand (dealer rotates automatically)
 - Game state is synchronized across all connected clients
 - Commands are only valid for the current player's turn
 - Turn clarity: all players see `Turn`, and the active player gets a highlighted `Your turn` label
 - Command panel visibility by phase:
-  - Idle/hand-over: only dealer sees `deal` and `rotate` (others see no command panel)
+  - Idle: dealer sees `deal` (observer host can also `deal` in observer mode)
+  - Hand-over: seated humans can use `Start Next Hand`
   - Bidding: only bidding controls are shown (`bid`, `pass`, `take`)
   - Playing: command controls are hidden; play is via clickable cards in `Your hand`
 

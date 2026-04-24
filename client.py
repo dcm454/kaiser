@@ -21,6 +21,7 @@ Commands:
     take <trump>        Dealer takes current highest number with chosen trump
     trick               Show trick/contract/team points state
     play <card>         Play card (example: 10h, As, 7c)
+    next_hand           Start next hand after hand over (any seated human)
     rotate              Rotate dealer to next player
     quit                Exit
 """.strip()
@@ -126,7 +127,7 @@ class KaiserClient:
         elif msg_type == "hand_complete":
             print(f"\n{data['message']}")
             print(f"\n{data['trick']}")
-            print("\nType 'rotate' to move dealer, then 'deal' for next hand.")
+            print("\nType 'next_hand' to start the next hand.")
         
         elif msg_type == "hand":
             print(f"\nYour hand: {data['cards']}")
@@ -211,6 +212,9 @@ class KaiserClient:
         
         elif cmd == "rotate":
             message = {"action": "rotate"}
+
+        elif cmd in ("next_hand", "nexthand", "next"):
+            message = {"action": "next_hand"}
         
         else:
             print(f"Unknown command: {cmd}")

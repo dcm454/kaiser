@@ -16,12 +16,18 @@ class BotProfile:
     bid_aggression: float = 1.0
     bid_risk_buffer: int = 0
     no_trump_bias: float = 1.0
-    no_trump_bid_margin: float = 3.0
-    no_trump_take_margin: float = 5.0
+    no_trump_bid_margin: float = 5.0
+    no_trump_take_margin: float = 7.0
+    no_trump_bid_discount: int = 1
+    no_trump_take_discount: int = 1
+    no_trump_overcall_buffer: int = 1
     dealer_take_threshold: float = 52.0
     lead_high_bias: float = 0.5
     trump_spend_bias: float = 0.5
     random_play_jitter: float = 0.1
+    nt_cash_top_bias: float = 0.75
+    nt_entry_preserve_bias: float = 0.6
+    nt_duck_bias: float = 0.2
 
 
 PRESET_PROFILES: Dict[str, BotProfile] = {
@@ -30,40 +36,60 @@ PRESET_PROFILES: Dict[str, BotProfile] = {
         bid_aggression=0.72,
         bid_risk_buffer=2,
         no_trump_bias=0.85,
+        no_trump_bid_margin=6.0,
+        no_trump_take_margin=8.0,
         dealer_take_threshold=80.0,
         lead_high_bias=0.2,
         trump_spend_bias=0.2,
         random_play_jitter=0.05,
+        nt_cash_top_bias=0.85,
+        nt_entry_preserve_bias=0.75,
+        nt_duck_bias=0.3,
     ),
     "balanced": BotProfile(
         name="balanced",
         bid_aggression=0.74,
         bid_risk_buffer=3,
         no_trump_bias=0.80,
+        no_trump_bid_margin=5.0,
+        no_trump_take_margin=7.0,
         dealer_take_threshold=78.0,
         lead_high_bias=0.5,
         trump_spend_bias=0.5,
         random_play_jitter=0.1,
+        nt_cash_top_bias=0.78,
+        nt_entry_preserve_bias=0.62,
+        nt_duck_bias=0.2,
     ),
     "aggressive": BotProfile(
         name="aggressive",
         bid_aggression=0.77,
         bid_risk_buffer=3,
         no_trump_bias=0.78,
+        no_trump_bid_margin=4.5,
+        no_trump_take_margin=6.5,
         dealer_take_threshold=74.0,
         lead_high_bias=0.8,
         trump_spend_bias=0.8,
         random_play_jitter=0.2,
+        nt_cash_top_bias=0.7,
+        nt_entry_preserve_bias=0.45,
+        nt_duck_bias=0.1,
     ),
     "chaotic": BotProfile(
         name="chaotic",
         bid_aggression=0.8,
         bid_risk_buffer=2,
         no_trump_bias=0.78,
+        no_trump_bid_margin=5.0,
+        no_trump_take_margin=7.0,
         dealer_take_threshold=76.0,
         lead_high_bias=0.5,
         trump_spend_bias=0.6,
         random_play_jitter=0.6,
+        nt_cash_top_bias=0.6,
+        nt_entry_preserve_bias=0.35,
+        nt_duck_bias=0.35,
     ),
 }
 
@@ -80,6 +106,8 @@ class DecisionRecord:
 
 
 class BotPolicy:
+    NT_RANK_DESC = tuple(reversed(RANK_ORDER))
+
     def __init__(self, profile: BotProfile):
         self.profile = profile
 
@@ -110,6 +138,50 @@ class BotPolicy:
                 if card.suit == "hearts" and card.rank != "5":
                     return False
         return True
+
+    def _nt_top_run_length(self, cards: List[Card]) -> int:
+        if not cards:
+            return 0
+        ranks = {card.rank for card in cards}
+        run = 0
+        for rank in self.NT_RANK_DESC:
+            if rank in ranks:
+                run += 1
+            else:
+                break
+        return run
+
+    def _choose_nt_lead_suit(self, legal: List[Card]) -> Optional[str]:
+        if not legal:
+            return None
+
+        by_suit: Dict[str, List[Card]] = {suit: [] for suit in SUITS}
+        for card in legal:
+            by_suit[card.suit].append(card)
+
+        best_suit: Optional[str] = None
+        best_score: Optional[float] = None
+
+        for suit in SUITS:
+            suit_cards = by_suit[suit]
+            if not suit_cards:
+                continue
+
+            run = self._nt_top_run_length(suit_cards)
+            honor_count = sum(1 for card in suit_cards if card.rank in {"A", "K", "Q", "J", "10"})
+            high_card = max(suit_cards, key=self._rank_value)
+
+            score = run * 4.0 + len(suit_cards) * 1.4 + honor_count * 0.75
+
+            # Preserve side-suit entries when possible; avoid leading singleton top honors.
+            if len(suit_cards) == 1 and high_card.rank in {"A", "K"}:
+                score -= 3.0 * self.profile.nt_entry_preserve_bias
+
+            if best_score is None or score > best_score:
+                best_suit = suit
+                best_score = score
+
+        return best_suit
 
     def _no_trump_strength(self, hand: List[Card]) -> float:
         rank_scores = {
@@ -243,6 +315,8 @@ class BotPolicy:
 
         projected_bid = int((best_strength / 8.0) * self.profile.bid_aggression)
         projected_bid = self._clamp_bid(projected_bid)
+        if best_trump == "no-trump":
+            projected_bid = self._clamp_bid(projected_bid - self.profile.no_trump_bid_discount)
 
         highest = game.highest_bid
         highest_value = highest.value if highest else 0
@@ -273,7 +347,11 @@ class BotPolicy:
                 payload["trump"] = "no-trump"
             return "bid", payload, reason
 
-        can_bid = projected_bid >= highest_value if best_trump == "no-trump" else projected_bid >= highest_value + 1 + self.profile.bid_risk_buffer
+        can_bid = (
+            projected_bid >= highest_value + self.profile.no_trump_overcall_buffer
+            if best_trump == "no-trump"
+            else projected_bid >= highest_value + 1 + self.profile.bid_risk_buffer
+        )
         if can_bid:
             payload = {"value": projected_bid, "__debug": debug}
             if best_trump == "no-trump":
@@ -285,7 +363,13 @@ class BotPolicy:
         effective_take_trump = "no-trump" if highest is not None and highest.trump == "no-trump" else take_trump
         projected_take_bid = int((take_strength / 8.0) * self.profile.bid_aggression)
         projected_take_bid = self._clamp_bid(projected_take_bid)
-        projected_can_match_current_bid = projected_take_bid >= highest_value
+        if effective_take_trump == "no-trump":
+            projected_take_bid = self._clamp_bid(projected_take_bid - self.profile.no_trump_take_discount)
+        projected_can_match_current_bid = (
+            projected_take_bid >= highest_value + self.profile.no_trump_overcall_buffer
+            if effective_take_trump == "no-trump"
+            else projected_take_bid >= highest_value
+        )
         if is_dealer_turn and projected_can_match_current_bid and take_strength >= self.profile.dealer_take_threshold:
             # Taking partner's bid should be rare and only done with very high confidence.
             if highest is not None and highest.player_index != player_index and (highest.player_index % 2) == (player_index % 2):
@@ -465,6 +549,37 @@ class BotPolicy:
         winning_cards = [c for c in legal if self._would_currently_win(game, c)]
         lowest_legal = min(legal, key=self._rank_value)
         highest_legal = max(legal, key=self._rank_value)
+
+        if contract_trump == "no-trump" and game.contract is not None:
+            declarer_team = game.contract.player_index % 2
+            on_declarer_team = (player_index % 2) == declarer_team
+
+            # Declarer-side no-trump plan: prefer cashing strong suits from the top.
+            if on_declarer_team and not game.current_trick and len(legal) > 1:
+                lead_suit = self._choose_nt_lead_suit(legal)
+                if lead_suit is not None:
+                    suit_cards = [c for c in legal if c.suit == lead_suit]
+                    if suit_cards:
+                        if random.random() < self.profile.nt_cash_top_bias:
+                            target = max(suit_cards, key=self._rank_value)
+                            return "play", {"card": self._card_to_token(target)}, "nt_cash_top_from_best_suit"
+                        target = min(suit_cards, key=self._rank_value)
+                        return "play", {"card": self._card_to_token(target)}, "nt_probe_low_from_best_suit"
+
+            # Preserve partner's winner/entry in no-trump when possible.
+            if partner_winning and len(legal) > 1:
+                preserve_bias = self.profile.nt_entry_preserve_bias if on_declarer_team else self.profile.nt_duck_bias
+                if random.random() < preserve_bias:
+                    losing_cards = [c for c in legal if not self._would_currently_win(game, c)]
+                    if losing_cards:
+                        target = min(losing_cards, key=self._rank_value)
+                        reason = "nt_preserve_partner_entry" if on_declarer_team else "nt_defense_duck"
+                        return "play", {"card": self._card_to_token(target)}, reason
+
+            # When taking an NT trick for declarer side, favor cashing high winners.
+            if on_declarer_team and winning_cards and random.random() < self.profile.nt_cash_top_bias:
+                target = max(winning_cards, key=self._rank_value)
+                return "play", {"card": self._card_to_token(target)}, "nt_take_high_winner"
 
         # If 5H is in the current trick, always play the highest winning card or,
         # if unable to win by following suit, the highest available trump.
