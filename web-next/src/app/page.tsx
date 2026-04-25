@@ -11,6 +11,7 @@ type RoomPayload = {
     host_player_index?: number;
     host_is_observer?: boolean;
     setup?: SetupState;
+    roster?: Array<{ seat?: number; name?: string | null }>;
   };
 };
 
@@ -181,9 +182,22 @@ export default function Page() {
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState<number | null>(null);
+  const [seatNames, setSeatNames] = useState<string[]>(["Seat 1", "Seat 2", "Seat 3", "Seat 4"]);
+  const [winnerTeamIndex, setWinnerTeamIndex] = useState<number | null>(null);
+  const [winnerTeamLabel, setWinnerTeamLabel] = useState<string | null>(null);
+  const [showWinCelebration, setShowWinCelebration] = useState(false);
+  const [celebrationKey, setCelebrationKey] = useState(0);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const trickCompletedRef = useRef(false);
   const handSectionRef = useRef<HTMLDivElement | null>(null);
+  const previousWinnerTeamRef = useRef<number | null>(null);
+  const trickLingerTimerRef = useRef<number | null>(null);
+  const trickPlayHistoryRef = useRef<string[]>([]);
+  const trickNumberRef = useRef<number>(1);
+  const currentPhaseRef = useRef<string>("idle");
+  const [trickLingering, setTrickLingering] = useState(false);
+  const [lingeredTrickHistory, setLingeredTrickHistory] = useState<string[]>([]);
+  const [lingeredTrickNumber, setLingeredTrickNumber] = useState(1);
 
   const homeSchema = useMemo(
     () => ({
@@ -284,6 +298,18 @@ export default function Page() {
         setSetupAssignments(data.room.setup.current_assignments);
       }
     }
+
+    if (Array.isArray(data.room.roster) && data.room.roster.length > 0) {
+      const nextNames = ["Seat 1", "Seat 2", "Seat 3", "Seat 4"];
+      for (const item of data.room.roster) {
+        if (!item || typeof item.seat !== "number") continue;
+        if (item.seat < 0 || item.seat > 3) continue;
+        if (typeof item.name === "string" && item.name.trim().length > 0) {
+          nextNames[item.seat] = item.name;
+        }
+      }
+      setSeatNames(nextNames);
+    }
   };
 
   const assignmentLabel = (assignment: string | null) => {
@@ -312,9 +338,22 @@ export default function Page() {
     const winning = scoreboard.winning ?? {};
     const target = winning.target ?? 52;
     const noTrumpSeen = winning.no_trump_bid_seen === true;
-    const winnerTeamLabel = winning.winner_team_label;
+    const winnerLabel = winning.winner_team_label;
     const base = `Target ${target} (${noTrumpSeen ? "successful no-trump contract seen" : "no successful no-trump contract yet"})`;
-    setWinningStatus(winnerTeamLabel ? `${base} | Winner: ${winnerTeamLabel} (bid out)` : `${base} | No winner yet`);
+    setWinningStatus(winnerLabel ? `${base} | Winner: ${winnerLabel} (bid out)` : `${base} | No winner yet`);
+
+    const nextWinnerTeamIndex = winning.winner_team_index === 0 || winning.winner_team_index === 1
+      ? winning.winner_team_index
+      : null;
+    if (nextWinnerTeamIndex !== previousWinnerTeamRef.current) {
+      if (nextWinnerTeamIndex !== null) {
+        setCelebrationKey((value) => value + 1);
+        setShowWinCelebration(true);
+      }
+      previousWinnerTeamRef.current = nextWinnerTeamIndex;
+    }
+    setWinnerTeamIndex(nextWinnerTeamIndex);
+    setWinnerTeamLabel(typeof winnerLabel === "string" && winnerLabel.length > 0 ? winnerLabel : null);
 
     const newGame = scoreboard.new_game ?? {};
     const votes = newGame.votes ?? 0;
@@ -506,11 +545,16 @@ export default function Page() {
           setBidProgression([]);
           setTrickPlayHistory([]);
           setTrickNumber(1);
+          setWinnerTeamIndex(null);
+          setWinnerTeamLabel(null);
+          setShowWinCelebration(false);
+          previousWinnerTeamRef.current = null;
           setStartNewGameVisible(false);
           setStartNewGameReady(false);
           setStartNewGameVoted(false);
           trickCompletedRef.current = false;
           setTrickCompleted(false);
+          clearTrickLinger();
           break;
         default:
           if (data.message) appendLog(data.message);
@@ -524,6 +568,7 @@ export default function Page() {
           setTrickNumber((prev) => prev + 1);
           trickCompletedRef.current = false;
           setTrickCompleted(false);
+          clearTrickLinger();
         }
         if (data.message.includes(" played ")) {
           setHandActionError(null);
@@ -567,24 +612,84 @@ export default function Page() {
     setWs(socket);
   };
 
+  const clearTrickLinger = () => {
+    if (trickLingerTimerRef.current !== null) {
+      window.clearTimeout(trickLingerTimerRef.current);
+      trickLingerTimerRef.current = null;
+    }
+    setTrickLingering(false);
+  };
+
   const suits = ["clubs", "diamonds", "hearts", "spades"];
 
   const thisTrickText = useMemo(() => {
-    const displayTrickNumber = trickCompleted && trickNumber > 1 ? trickNumber - 1 : trickNumber;
-    const header = trickCompleted ? `Trick Number: ${displayTrickNumber} (completed)` : `Trick Number: ${displayTrickNumber}`;
+    const effectiveHistory = trickLingering ? lingeredTrickHistory : trickPlayHistory;
+    const effectiveNumber = trickLingering ? lingeredTrickNumber : trickNumber;
+    const effectiveCompleted = trickLingering || trickCompleted;
+
+    const displayTrickNumber = effectiveCompleted && effectiveNumber > 1 ? effectiveNumber - 1 : effectiveNumber;
+    const header = effectiveCompleted ? `Trick Number: ${displayTrickNumber} (completed)` : `Trick Number: ${displayTrickNumber}`;
     const lines = [header];
-    if (trickPlayHistory.length === 0) {
+
+    if (currentPhase === "playing") {
+      const bySeat: Record<number, string> = {};
+      for (const line of effectiveHistory) {
+        const match = /^(.+?) played (.+)$/.exec(line.trim());
+        if (!match) continue;
+        const player = match[1].trim();
+        const card = match[2].trim();
+        const seat = seatNames.findIndex((name) => name === player);
+        if (seat >= 0) bySeat[seat] = card;
+      }
+
+      let leader = currentPlayerIndex ?? 0;
+      if (effectiveHistory.length > 0) {
+        const first = effectiveHistory[0].trim();
+        const match = /^(.+?) played /.exec(first);
+        if (match) {
+          const seat = seatNames.findIndex((name) => name === match[1].trim());
+          if (seat >= 0) leader = seat;
+        }
+      }
+
+      const order = [leader, (leader + 1) % 4, (leader + 2) % 4, (leader + 3) % 4];
+      for (const seat of order) {
+        const playerName = seatNames[seat] ?? `Seat ${seat + 1}`;
+        const card = bySeat[seat];
+        const isCurrent = !effectiveCompleted && seat === currentPlayerIndex;
+        lines.push(card ? `${playerName} played ${card}` : (isCurrent ? `\x01${playerName}` : playerName));
+      }
+      return lines.join("\n");
+    }
+
+    if (effectiveHistory.length === 0) {
       lines.push(currentPhase === "hand_over" ? "No active trick" : "No cards played in this trick yet");
     } else {
-      lines.push(...trickPlayHistory);
+      lines.push(...effectiveHistory);
     }
     return lines.join("\n");
-  }, [trickNumber, trickPlayHistory, currentPhase, trickCompleted]);
+  }, [trickNumber, trickPlayHistory, currentPhase, trickCompleted, seatNames, currentPlayerIndex, trickLingering, lingeredTrickHistory, lingeredTrickNumber]);
 
   const bidCardText = useMemo(() => {
     if (bidProgression.length > 0) return bidProgression;
     return ["No bids yet"];
   }, [bidProgression]);
+
+  const biddingOrderLines = useMemo(() => {
+    if (dealerIndex === null) {
+      return bidProgression.length > 0
+        ? bidProgression.map(line => ({ text: line, isCurrentBidder: false, hasBid: true }))
+        : [{ text: "No bids yet", isCurrentBidder: false, hasBid: false }];
+    }
+    const order = [(dealerIndex + 1) % 4, (dealerIndex + 2) % 4, (dealerIndex + 3) % 4, dealerIndex];
+    return order.map(seat => {
+      const name = seatNames[seat] ?? `Seat ${seat + 1}`;
+      const bidLine = bidProgression.find(line => line.startsWith(`${name}:`));
+      const hasBid = !!bidLine;
+      const isCurrent = currentPhase === "bidding" && seat === currentPlayerIndex && !hasBid;
+      return { text: bidLine ?? name, isCurrentBidder: isCurrent, hasBid };
+    });
+  }, [dealerIndex, seatNames, bidProgression, currentPhase, currentPlayerIndex]);
 
   const isWinningBidLine = (line: string) => {
     const normalized = line.toLowerCase();
@@ -652,6 +757,35 @@ export default function Page() {
     setMobileMenuOpen(false);
   }, [currentPhase, connected, roomReady]);
 
+  useEffect(() => { trickPlayHistoryRef.current = trickPlayHistory; }, [trickPlayHistory]);
+  useEffect(() => { trickNumberRef.current = trickNumber; }, [trickNumber]);
+  useEffect(() => { currentPhaseRef.current = currentPhase; }, [currentPhase]);
+
+  useEffect(() => {
+    if (!trickCompleted) return;
+    setLingeredTrickHistory([...trickPlayHistoryRef.current]);
+    setLingeredTrickNumber(trickNumberRef.current);
+    setTrickLingering(true);
+    if (trickLingerTimerRef.current !== null) window.clearTimeout(trickLingerTimerRef.current);
+    trickLingerTimerRef.current = window.setTimeout(() => {
+      setTrickLingering(false);
+      trickLingerTimerRef.current = null;
+      // If no new trick has started (no play has arrived to flip trickCompletedRef),
+      // reset so the UI shows the fresh empty trick instead of the completed one.
+      if (trickCompletedRef.current && currentPhaseRef.current === "playing") {
+        trickCompletedRef.current = false;
+        setTrickCompleted(false);
+        setTrickPlayHistory([]);
+      }
+    }, 4000);
+  }, [trickCompleted]);
+
+  useEffect(() => {
+    if (!showWinCelebration) return;
+    const timer = window.setTimeout(() => setShowWinCelebration(false), 4200);
+    return () => window.clearTimeout(timer);
+  }, [showWinCelebration]);
+
   const phaseChipClasses = () => {
     if (currentPhase === "playing") return "chip border-emerald-300 bg-emerald-100 text-emerald-900";
     if (currentPhase === "bidding") return "chip border-lime-300 bg-lime-100 text-lime-900";
@@ -686,6 +820,31 @@ export default function Page() {
 
   return (
     <main className="relative mx-auto max-w-7xl px-4 pb-8 pt-6 sm:px-6 lg:px-8">
+      {showWinCelebration && winnerTeamLabel && (
+        <div key={celebrationKey} className="win-celebration pointer-events-none fixed inset-0 z-50">
+          <div className="win-ribbon absolute left-1/2 top-16 -translate-x-1/2 rounded-full border border-amber-300 bg-amber-100/95 px-6 py-2 text-center text-sm font-semibold text-amber-900 shadow-xl">
+            {winnerTeamLabel} wins the game!
+          </div>
+          {Array.from({ length: 28 }).map((_, index) => {
+            const left = ((index * 37) % 100);
+            const delay = (index % 7) * 0.08;
+            const duration = 2.6 + (index % 5) * 0.18;
+            const colors = ["#f59e0b", "#22c55e", "#0ea5e9", "#ef4444"];
+            return (
+              <span
+                key={`confetti-${index}`}
+                className="win-confetti"
+                style={{
+                  left: `${left}%`,
+                  animationDelay: `${delay}s`,
+                  animationDuration: `${duration}s`,
+                  backgroundColor: colors[index % colors.length],
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(homeSchema) }} />
       <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-48 bg-gradient-to-b from-emerald-300/35 to-transparent" />
       <div className="space-y-4">
@@ -925,11 +1084,17 @@ export default function Page() {
                     <div className="mono-block whitespace-pre-wrap">
                       <strong>This Trick</strong>
                       <div className="mt-2 space-y-0.5">
-                        {`${currentPhase === "playing" ? `Turn: ${turnName}\n` : ""}${thisTrickText}`
+                        {thisTrickText
                           .split("\n")
-                          .map((line, index) => (
-                            <div key={`${line}-${index}`}>{renderSuitColoredLine(line)}</div>
-                          ))}
+                          .map((line, index) => {
+                            const isCurrent = line.startsWith("\x01");
+                            const displayLine = isCurrent ? line.slice(1) : line;
+                            return (
+                              <div key={`${displayLine}-${index}`} className={isCurrent ? "font-bold italic" : undefined}>
+                                {renderSuitColoredLine(displayLine)}
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                   )}
@@ -938,12 +1103,20 @@ export default function Page() {
                   <div className="mono-block whitespace-pre-wrap">
                     <strong>Bid</strong>
                     <div className="mt-2 space-y-1">
-                      {bidCardText.map((line, index) => (
+                      {biddingOrderLines.map((item, index) => (
                         <div
-                          key={`${line}-${index}`}
-                          className={isWinningBidLine(line) ? "font-semibold text-emerald-700" : undefined}
+                          key={`${item.text}-${index}`}
+                          className={
+                            item.isCurrentBidder
+                              ? "font-bold italic"
+                              : isWinningBidLine(item.text)
+                              ? "font-semibold text-emerald-700"
+                              : !item.hasBid && item.text !== "No bids yet"
+                              ? "text-slate-400"
+                              : undefined
+                          }
                         >
-                          {line}
+                          {item.text}
                         </div>
                       ))}
                     </div>
@@ -1029,7 +1202,7 @@ export default function Page() {
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-base font-semibold">Your Hand</h3>
                     <div className="flex flex-wrap gap-2">
-                      {roomReady && currentPhase === "hand_over" && (
+                      {roomReady && currentPhase === "hand_over" && !startNewGameVisible && (
                         <button
                           className="chip border-emerald-700 bg-emerald-700 text-emerald-50 transition hover:bg-emerald-800"
                           onClick={() => {

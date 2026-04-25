@@ -413,7 +413,10 @@ class GameServer:
         self.rooms: Dict[str, GameRoom] = {}
         self.connections: Dict[WebSocketServerProtocol, tuple] = {}  # ws -> (room_id, player_index or None)
         self.bot_turn_delay_seconds = float(os.environ.get("BOT_TURN_DELAY_SECONDS", "1.2"))
-        self.human_trick_result_pause_seconds = float(os.environ.get("HUMAN_TRICK_RESULT_PAUSE_SECONDS", "2.0"))
+        self.trick_clear_pause_seconds = float(os.environ.get("TRICK_CLEAR_PAUSE_SECONDS", "4.0"))
+        self.human_trick_result_pause_seconds = float(
+            os.environ.get("HUMAN_TRICK_RESULT_PAUSE_SECONDS", str(self.trick_clear_pause_seconds))
+        )
         self.firestore_enabled = os.environ.get("FIRESTORE_ENABLED", "1").lower() not in ("0", "false", "no")
         self.firestore_collection = os.environ.get("FIRESTORE_GAMES_COLLECTION", "kaiser_game_stats")
         self.firestore_client = None
@@ -732,6 +735,16 @@ class GameServer:
                     )
                     await self._persist_room_snapshot(room, "bot_play_card")
                     await self._send_hands_to_humans(room)
+
+                    trick_completed = isinstance(result, str) and "| Trick won by " in result
+                    if (
+                        trick_completed
+                        and game.phase == "playing"
+                        and room.is_bot_seat(game.play_turn_index)
+                        and self.trick_clear_pause_seconds > 0
+                    ):
+                        await asyncio.sleep(self.trick_clear_pause_seconds)
+                        continue
 
                     if game.phase == "hand_over":
                         await room.broadcast(

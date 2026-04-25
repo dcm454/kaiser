@@ -88,6 +88,39 @@ h3 {
   }
 }
 
+@keyframes confetti-fall {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -8vh, 0) rotate(0deg);
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 102vh, 0) rotate(520deg);
+  }
+}
+
+@keyframes ribbon-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.92);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  80% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -4px) scale(0.98);
+  }
+}
+
 @layer utilities {
   .animate-enter {
     animation: enter-rise 560ms ease-out both;
@@ -95,6 +128,21 @@ h3 {
 
   .text-soft {
     color: var(--text-1);
+  }
+
+  .win-ribbon {
+    animation: ribbon-pop 4200ms ease both;
+  }
+
+  .win-confetti {
+    position: absolute;
+    top: -12vh;
+    width: 8px;
+    height: 16px;
+    border-radius: 999px;
+    animation-name: confetti-fall;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
   }
 }
 
